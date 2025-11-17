@@ -1,274 +1,192 @@
+// src/app.js
+
 import express from "express";
 import axios from "axios";
 
 const app = express();
 app.use(express.json());
 
-// Lê o webhook do Bitrix das variáveis de ambiente do Render
-const rawBase = process.env.BITRIX_WEBHOOK_BASE;
+// -----------------------------------------------------------------------------
+// CONFIG BITRIX
+// -----------------------------------------------------------------------------
 
-// segurança extra: garante que tem exatamente 1 barra no final
-const BITRIX_WEBHOOK_BASE = (rawBase || "").replace(/\/+$/, "") + "/";
+// Você já tem a variável de ambiente BITRIX_WEBHOOK_BASE no Render.
+// Exemplo de valor: https://smartgr.bitrix24.com.br/rest/12/h0ah2vd1xnc0nncv/
+const rawBase =
+  process.env.BITRIX_WEBHOOK_BASE ||
+  "https://smartgr.bitrix24.com.br/rest/12/h0ah2vd1xnc0nncv/";
+
+// garante 1 barra só no final
+const BITRIX_WEBHOOK_BASE = rawBase.replace(/\/+$/, "") + "/";
 
 if (!rawBase) {
-  console.error("ERRO: BITRIX_WEBHOOK_BASE não definido nas variáveis de ambiente");
+  console.error(
+    "ERRO: BITRIX_WEBHOOK_BASE não definido nas variáveis de ambiente"
+  );
 }
 
-// helper pra montar URL correta do método REST
 function bitrixUrl(method) {
   const url = `${BITRIX_WEBHOOK_BASE}${method}.json`;
   console.log("URL Bitrix usada:", url);
   return url;
 }
 
-// pega o endereço "principal" do pedido
-function getPrimaryAddress(order) {
-  const customer = order.customer || {};
-  const addr =
-    order.shipping_address ||
-    order.billing_address ||
-    customer.default_address || {
-      address1: "",
-      address2: "",
-      city: "",
-      province: "",
-      country: "",
-      zip: "",
-      country_code: "",
-    };
+// Funil VAREJO
+const CATEGORY_ID = 1;
+const STAGE_NEW = "C1:NEW"; // 1. Abordagem e Envio material
+const STAGE_WON = "C1:WON"; // 6. Fechados (Sucesso)
+// Se o ID interno do seu "7. Perdido" for diferente, troque aqui:
+const STAGE_LOST = "C1:LOSE"; // 7. Perdido
 
-  console.log("Endereço encontrado na Shopify:", addr);
-  return addr;
+// -----------------------------------------------------------------------------
+// HELPERS
+// -----------------------------------------------------------------------------
+
+// Define a fase do funil com base no status financeiro da Shopify
+function mapStage(order) {
+  const fs = (order.financial_status || "").toLowerCase();
+
+  if (fs === "paid" || fs === "partially_paid") {
+    return STAGE_WON;
+  }
+  if (fs === "refunded" || fs === "voided") {
+    return STAGE_LOST;
+  }
+
+  // pending, authorized, etc.
+  return STAGE_NEW;
 }
 
-// normaliza telefone com base no país
-function normalizePhone(order) {
-  const customer = order.customer || {};
-  let phone =
-    customer.phone ||
-    (order.billing_address && order.billing_address.phone) ||
-    (order.shipping_address && order.shipping_address.phone) ||
-    (customer.default_address && customer.default_address.phone) ||
-    order.phone ||
-    "";
-
-  if (!phone) {
-    console.log("Nenhum telefone encontrado na Shopify.");
-    return "";
-  }
-
-  // tira espaços extras
-  phone = phone.trim();
-  console.log("Telefone bruto vindo da Shopify:", phone);
-
-  // se já tem +, manda do jeito que veio
-  if (phone.startsWith("+")) {
-    return phone;
-  }
-
-  // tenta descobrir o país
-  const addr = getPrimaryAddress(order);
-  const countryCode = (addr.country_code || addr.countryCode || "").toUpperCase();
-
-  // remove tudo que não é número
-  let digits = phone.replace(/\D/g, "");
-
-  // se já começa com 55, só coloca o +
-  if (digits.startsWith("55")) {
-    return "+" + digits;
-  }
-
-  // se o país é BR, força +55
-  if (countryCode === "BR") {
-    return "+55" + digits;
-  }
-
-  // fallback: devolve o que vier (sem +)
-  return phone;
-}
-
-// formata um texto bonitinho pros comentários do negócio
-function buildOrderComment(order) {
-  const customer = order.customer || {};
-  const address = getPrimaryAddress(order);
-  const phone = normalizePhone(order);
-
-  const itens =
-    (order.line_items || [])
-      .map(
-        (item) =>
-          `- ${item.quantity}x ${item.title} (SKU: ${item.sku || "—"}) - R$ ${item.price}`
-      )
-      .join("\n") || "Nenhum item listado.";
-
-  const endereco = address.address1
-    ? `${address.address1 || ""} ${address.address2 || ""} - ${address.city || ""} - ${
-        address.province || ""
-      } - ${address.country || ""} - CEP: ${address.zip || ""}`
-    : "Não informado.";
-
-  return `
-Pedido Shopify
-Número: ${order.name}
-ID interno: ${order.id}
-Status financeiro: ${order.financial_status || "N/A"}
-Status de envio: ${order.fulfillment_status || "N/A"}
-Total: ${order.total_price || "N/A"} ${order.currency || ""}
-
-Cliente:
-Nome: ${customer.first_name || ""} ${customer.last_name || ""}
-Email: ${order.email || customer.email || "Não informado"}
-Telefone: ${phone || "Não informado"}
-
-Endereço:
-${endereco}
-
-Itens:
-${itens}
-`.trim();
-}
-
-// cria um contato no Bitrix (com telefone + endereço)
-async function createBitrixContact(order) {
-  const customer = order.customer || {};
-  const firstName = customer.first_name || (customer.name || "").split(" ")[0] || "Cliente";
-  const lastName =
-    customer.last_name || (customer.name || "").split(" ").slice(1).join(" ") || "";
-
-  const email = order.email || customer.email || "";
-  const phone = normalizePhone(order);
-  const address = getPrimaryAddress(order);
-
-  console.log("Telefone normalizado para o Bitrix:", phone || "(vazio)");
-
-  const fields = {
-    NAME: firstName,
-    LAST_NAME: lastName,
-    OPENED: "Y",
-    TYPE_ID: "CLIENT",
-    SOURCE_ID: "WEB",
-
-    // endereço mapeado pros campos padrão do Bitrix
-    ADDRESS: [address.address1, address.address2].filter(Boolean).join(" "),
-    ADDRESS_CITY: address.city || "",
-    ADDRESS_REGION: address.province || "",
-    ADDRESS_PROVINCE: address.province || "",
-    ADDRESS_COUNTRY: address.country || "",
-    ADDRESS_POSTAL_CODE: address.zip || "",
-  };
-
-  if (email) {
-    fields.EMAIL = [{ VALUE: email, VALUE_TYPE: "WORK" }];
-  }
-
-  if (phone) {
-    fields.PHONE = [{ VALUE: phone, VALUE_TYPE: "WORK" }];
-  }
-
-  try {
-    const resp = await axios.post(bitrixUrl("crm.contact.add"), {
-      fields,
-      params: { REGISTER_SONET_EVENT: "Y" },
-    });
-
-    console.log("Contato Bitrix criado:", resp.data);
-    if (resp.data && resp.data.result) {
-      return resp.data.result; // ID do contato
-    }
-  } catch (err) {
-    console.error("Erro ao criar contato no Bitrix:");
-    if (err.response) {
-      console.error("Status:", err.response.status);
-      console.error("Data:", err.response.data);
-    } else {
-      console.error(err.message);
-    }
-  }
-
-  return null; // segue sem contato vinculado
-}
-
-// cria o negócio no Bitrix
-async function createBitrixDeal(order, contactId = null) {
-  const comment = buildOrderComment(order);
-
-  const fields = {
-    TITLE: `Pedido Shopify ${order.name || order.id}`,
-    OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
-    CURRENCY_ID: order.currency || "BRL",
-    COMMENTS: comment,
-    ORIGIN_ID: "SHOPIFY",
-    ORIGINATOR_ID: String(order.id),
-  };
-
-  // Se quiser usar um pipeline/estágio específico, configure via env no Render:
-  if (process.env.BITRIX_CATEGORY_ID) {
-    fields.CATEGORY_ID = Number(process.env.BITRIX_CATEGORY_ID);
-  }
-
-  if (process.env.BITRIX_STAGE_ID) {
-    fields.STAGE_ID = process.env.BITRIX_STAGE_ID;
-  }
-
-  if (contactId) {
-    fields.CONTACT_ID = contactId;
-  }
-
-  const response = await axios.post(bitrixUrl("crm.deal.add"), {
-    fields,
-    params: { REGISTER_SONET_EVENT: "Y" },
+// Busca negócio no Bitrix pelo ID do pedido da Shopify
+async function findDealByShopifyId(orderId) {
+  const resp = await axios.post(bitrixUrl("crm.deal.list"), {
+    filter: {
+      ORIGINATOR_ID: "SHOPIFY",
+      ORIGIN_ID: String(orderId),
+    },
+    select: ["ID"],
   });
 
-  console.log("Resposta Bitrix (deal):", response.data);
-
-  if (response.data.error) {
-    throw new Error("Erro Bitrix (deal): " + response.data.error_description);
+  const result = resp.data.result || [];
+  if (result.length > 0) {
+    return result[0].ID; // ID do negócio
   }
-
-  return response.data.result; // ID do negócio
+  return null;
 }
 
-// adiciona produtos do pedido ao negócio
-async function setDealProducts(order, dealId) {
-  const items = order.line_items || [];
+// -----------------------------------------------------------------------------
+// ROTA QUE A SHOPIFY CHAMA (WEBHOOKS)
+// -----------------------------------------------------------------------------
 
-  if (!items.length) {
-    console.log("Pedido sem itens para adicionar ao negócio.");
-    return;
-  }
-
-  const rows = items.map((item) => ({
-    PRODUCT_NAME: item.title,
-    QUANTITY: item.quantity || 1,
-    PRICE: item.price ? Number(item.price) : 0,
-  }));
-
-  const resp = await axios.post(bitrixUrl("crm.deal.productrows.set"), {
-    id: dealId,
-    rows,
-  });
-
-  console.log("Resposta Bitrix (productrows.set):", resp.data);
-
-  if (resp.data.error) {
-    console.error("Erro Bitrix ao definir produtos:", resp.data);
-  }
-}
-
-// Rota que a Shopify chama
-app.post("/webhook", async (req, res) => {
+app.post("/shopify-order", async (req, res) => {
   try {
     const order = req.body;
-    console.log("Pedido recebido da Shopify:", order.id, `#${order.name}`);
 
-    // 1) Cria contato com telefone + endereço
-    const contactId = await createBitrixContact(order);
+    console.log(
+      "Webhook Shopify recebido:",
+      order.id,
+      order.name,
+      order.financial_status
+    );
 
-    // 2) Cria negócio vinculado ao contato
-    const dealId = await createBitrixDeal(order, contactId);
+    const customer = order.customer || {};
+    const address =
+      order.shipping_address || order.billing_address || {};
 
-    // 3) Adiciona produtos ao negócio
-    await setDealProducts(order, dealId);
+    const phone =
+      customer.phone ||
+      address.phone ||
+      order.phone ||
+      "";
+
+    const email = customer.email || order.email || "";
+
+    const productsString = (order.line_items || [])
+      .map((item) => `${item.quantity}x ${item.title}`)
+      .join(", ");
+
+    const stageToUse = mapStage(order);
+
+    // Campos de endereço para os campos padrão do Negócio no Bitrix
+    const addressLine = `${address.address1 || ""} ${
+      address.address2 || ""
+    }`.trim();
+
+    const commentsText = `
+Status financeiro: ${order.financial_status || "N/A"}
+Status de envio: ${order.fulfillment_status || "N/A"}
+
+Cliente: ${(customer.first_name || "") + " " + (customer.last_name || "")}
+Email: ${email || "não informado"}
+Telefone: ${phone || "não informado"}
+
+Endereço:
+${address.address1 || ""} ${address.address2 || ""}
+${address.city || ""} - ${address.province || ""}
+${address.zip || ""} - ${address.country || ""}
+
+Produtos:
+${productsString || "sem itens"}
+
+(Atualizado automaticamente pela Shopify)
+`.trim();
+
+    const fields = {
+      TITLE: `Pedido Shopify ${order.name || order.id}`,
+      CATEGORY_ID,
+      STAGE_ID: stageToUse,
+      OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
+      CURRENCY_ID: order.currency || "BRL",
+
+      // ligação com a Shopify
+      ORIGINATOR_ID: "SHOPIFY",
+      ORIGIN_ID: String(order.id),
+
+      // endereço (campos padrão do negócio no Bitrix)
+      ADDRESS: addressLine,
+      ADDRESS_CITY: address.city || "",
+      ADDRESS_REGION: address.province || "",
+      ADDRESS_PROVINCE: address.province || "",
+      ADDRESS_POSTAL_CODE: address.zip || "",
+      ADDRESS_COUNTRY: address.country || "",
+
+      COMMENTS: commentsText,
+    };
+
+    // -------------------------------------------------------------------------
+    // CRIA OU ATUALIZA NEGÓCIO
+    // -------------------------------------------------------------------------
+
+    const existingDealId = await findDealByShopifyId(order.id);
+
+    let bitrixResponse;
+
+    if (existingDealId) {
+      console.log(
+        "Atualizando negócio existente no Bitrix:",
+        existingDealId
+      );
+      bitrixResponse = await axios.post(bitrixUrl("crm.deal.update"), {
+        id: existingDealId,
+        fields,
+      });
+    } else {
+      console.log("Criando novo negócio no Bitrix...");
+      bitrixResponse = await axios.post(bitrixUrl("crm.deal.add"), {
+        fields,
+      });
+    }
+
+    console.log("Resposta Bitrix:", bitrixResponse.data);
+
+    if (bitrixResponse.data.error) {
+      console.error("Erro Bitrix:", bitrixResponse.data);
+      return res
+        .status(500)
+        .send(
+          "Erro Bitrix: " + bitrixResponse.data.error_description
+        );
+    }
 
     res.status(200).send("OK");
   } catch (err) {
@@ -276,20 +194,17 @@ app.post("/webhook", async (req, res) => {
     if (err.response) {
       console.error("Status:", err.response.status);
       console.error("Data:", err.response.data);
-      res
-        .status(500)
-        .send(
-          "Erro ao integrar (Bitrix): " +
-            (err.response.data.error_description || err.response.data.error || "Erro desconhecido")
-        );
     } else {
       console.error(err.message);
-      res.status(500).send("Erro ao integrar");
     }
+    res.status(500).send("Erro ao integrar");
   }
 });
 
-// Porta obrigatória no Render
+// -----------------------------------------------------------------------------
+// SERVIDOR (Render exige que a app fique ouvindo numa porta)
+// -----------------------------------------------------------------------------
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("Servidor ouvindo na porta", PORT);
