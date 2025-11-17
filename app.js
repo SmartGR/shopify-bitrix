@@ -21,10 +21,10 @@ function bitrixUrl(method) {
   return url;
 }
 
-// helper para pegar o endereço "principal" do pedido
+// pega o endereço "principal" do pedido
 function getPrimaryAddress(order) {
   const customer = order.customer || {};
-  return (
+  const addr =
     order.shipping_address ||
     order.billing_address ||
     customer.default_address || {
@@ -34,14 +34,64 @@ function getPrimaryAddress(order) {
       province: "",
       country: "",
       zip: "",
-    }
-  );
+      country_code: "",
+    };
+
+  console.log("Endereço encontrado na Shopify:", addr);
+  return addr;
+}
+
+// normaliza telefone com base no país
+function normalizePhone(order) {
+  const customer = order.customer || {};
+  let phone =
+    customer.phone ||
+    (order.billing_address && order.billing_address.phone) ||
+    (order.shipping_address && order.shipping_address.phone) ||
+    (customer.default_address && customer.default_address.phone) ||
+    order.phone ||
+    "";
+
+  if (!phone) {
+    console.log("Nenhum telefone encontrado na Shopify.");
+    return "";
+  }
+
+  // tira espaços extras
+  phone = phone.trim();
+  console.log("Telefone bruto vindo da Shopify:", phone);
+
+  // se já tem +, manda do jeito que veio
+  if (phone.startsWith("+")) {
+    return phone;
+  }
+
+  // tenta descobrir o país
+  const addr = getPrimaryAddress(order);
+  const countryCode = (addr.country_code || addr.countryCode || "").toUpperCase();
+
+  // remove tudo que não é número
+  let digits = phone.replace(/\D/g, "");
+
+  // se já começa com 55, só coloca o +
+  if (digits.startsWith("55")) {
+    return "+" + digits;
+  }
+
+  // se o país é BR, força +55
+  if (countryCode === "BR") {
+    return "+55" + digits;
+  }
+
+  // fallback: devolve o que vier (sem +)
+  return phone;
 }
 
 // formata um texto bonitinho pros comentários do negócio
 function buildOrderComment(order) {
   const customer = order.customer || {};
   const address = getPrimaryAddress(order);
+  const phone = normalizePhone(order);
 
   const itens =
     (order.line_items || [])
@@ -59,8 +109,8 @@ function buildOrderComment(order) {
 
   return `
 Pedido Shopify
-ID: ${order.id}
 Número: ${order.name}
+ID interno: ${order.id}
 Status financeiro: ${order.financial_status || "N/A"}
 Status de envio: ${order.fulfillment_status || "N/A"}
 Total: ${order.total_price || "N/A"} ${order.currency || ""}
@@ -68,14 +118,7 @@ Total: ${order.total_price || "N/A"} ${order.currency || ""}
 Cliente:
 Nome: ${customer.first_name || ""} ${customer.last_name || ""}
 Email: ${order.email || customer.email || "Não informado"}
-Telefone: ${
-    customer.phone ||
-    (order.billing_address && order.billing_address.phone) ||
-    (order.shipping_address && order.shipping_address.phone) ||
-    (customer.default_address && customer.default_address.phone) ||
-    order.phone ||
-    "Não informado"
-  }
+Telefone: ${phone || "Não informado"}
 
 Endereço:
 ${endereco}
@@ -93,19 +136,10 @@ async function createBitrixContact(order) {
     customer.last_name || (customer.name || "").split(" ").slice(1).join(" ") || "";
 
   const email = order.email || customer.email || "";
-
-  // Procurar telefone em todos os lugares possíveis na Shopify
-  const phone =
-    customer.phone ||
-    (order.billing_address && order.billing_address.phone) ||
-    (order.shipping_address && order.shipping_address.phone) ||
-    (customer.default_address && customer.default_address.phone) ||
-    order.phone ||
-    "";
-
-  console.log("Telefone encontrado na Shopify:", phone || "(nenhum)");
-
+  const phone = normalizePhone(order);
   const address = getPrimaryAddress(order);
+
+  console.log("Telefone normalizado para o Bitrix:", phone || "(vazio)");
 
   const fields = {
     NAME: firstName,
@@ -113,6 +147,7 @@ async function createBitrixContact(order) {
     OPENED: "Y",
     TYPE_ID: "CLIENT",
     SOURCE_ID: "WEB",
+
     // endereço mapeado pros campos padrão do Bitrix
     ADDRESS: [address.address1, address.address2].filter(Boolean).join(" "),
     ADDRESS_CITY: address.city || "",
@@ -167,7 +202,6 @@ async function createBitrixDeal(order, contactId = null) {
   };
 
   // Se quiser usar um pipeline/estágio específico, configure via env no Render:
-  // BITRIX_CATEGORY_ID (ID do pipeline) e BITRIX_STAGE_ID (ID da etapa)
   if (process.env.BITRIX_CATEGORY_ID) {
     fields.CATEGORY_ID = Number(process.env.BITRIX_CATEGORY_ID);
   }
@@ -207,7 +241,6 @@ async function setDealProducts(order, dealId) {
     PRODUCT_NAME: item.title,
     QUANTITY: item.quantity || 1,
     PRICE: item.price ? Number(item.price) : 0,
-    // Se quiser vincular a produtos do catálogo do Bitrix, use PRODUCT_ID aqui
   }));
 
   const resp = await axios.post(bitrixUrl("crm.deal.productrows.set"), {
