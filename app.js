@@ -21,32 +21,182 @@ function bitrixUrl(method) {
   return url;
 }
 
+// formata um texto bonitinho pros comentários do negócio
+function buildOrderComment(order) {
+  const customer = order.customer || {};
+  const address = (order.shipping_address || order.billing_address || {});
+
+  const itens =
+    (order.line_items || [])
+      .map(
+        (item) =>
+          `- ${item.quantity}x ${item.title} (SKU: ${item.sku || "—"}) - R$ ${item.price}`
+      )
+      .join("\n") || "Nenhum item listado.";
+
+  const endereco = address.address1
+    ? `${address.address1 || ""} ${address.address2 || ""} - ${address.city || ""} - ${
+        address.province || ""
+      } - ${address.country || ""}, CEP: ${address.zip || ""}`
+    : "Não informado.";
+
+  return `
+Pedido Shopify bruto:
+ID: ${order.id}
+Número: ${order.name}
+Status financeiro: ${order.financial_status || "N/A"}
+Status de envio: ${order.fulfillment_status || "N/A"}
+Total: ${order.total_price || "N/A"} ${order.currency || ""}
+
+Cliente:
+Nome: ${customer.first_name || ""} ${customer.last_name || ""}
+Email: ${order.email || customer.email || "Não informado"}
+Telefone: ${customer.phone || order.phone || "Não informado"}
+
+Endereço de entrega:
+${endereco}
+
+Itens:
+${itens}
+
+Link do pedido (admin):
+${order.admin_graphql_api_id ? "Veja no painel da Shopify." : "—"}
+`.trim();
+}
+
+// cria um contato no Bitrix (opcionalmente, você pode depois evoluir pra "buscar por email e reaproveitar")
+async function createBitrixContact(order) {
+  const customer = order.customer || {};
+  const firstName = customer.first_name || (customer.name || "").split(" ")[0] || "Cliente";
+  const lastName =
+    customer.last_name || (customer.name || "").split(" ").slice(1).join(" ") || "";
+
+  const email = order.email || customer.email || "";
+  const phone = customer.phone || order.phone || "";
+
+  const fields = {
+    NAME: firstName,
+    LAST_NAME: lastName,
+    OPENED: "Y",
+    TYPE_ID: "CLIENT",
+    SOURCE_ID: "WEB",
+  };
+
+  if (email) {
+    fields.EMAIL = [{ VALUE: email, VALUE_TYPE: "WORK" }];
+  }
+
+  if (phone) {
+    fields.PHONE = [{ VALUE: phone, VALUE_TYPE: "WORK" }];
+  }
+
+  try {
+    const resp = await axios.post(bitrixUrl("crm.contact.add"), {
+      fields,
+      params: { REGISTER_SONET_EVENT: "Y" },
+    });
+
+    console.log("Contato Bitrix criado:", resp.data);
+    if (resp.data && resp.data.result) {
+      return resp.data.result; // ID do contato
+    }
+  } catch (err) {
+    console.error("Erro ao criar contato no Bitrix:");
+    if (err.response) {
+      console.error("Status:", err.response.status);
+      console.error("Data:", err.response.data);
+    } else {
+      console.error(err.message);
+    }
+  }
+
+  return null; // segue sem contato vinculado
+}
+
+// cria o negócio no Bitrix
+async function createBitrixDeal(order, contactId = null) {
+  const comment = buildOrderComment(order);
+
+  const fields = {
+    TITLE: `Pedido Shopify ${order.name || order.id}`,
+    OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
+    CURRENCY_ID: order.currency || "BRL",
+    COMMENTS: comment,
+    ORIGIN_ID: "SHOPIFY",
+    ORIGINATOR_ID: String(order.id),
+
+    // Se quiser usar um pipeline/estágio específico, configure via env no Render:
+    // BITRIX_CATEGORY_ID (ID do pipeline) e BITRIX_STAGE_ID (ID da etapa)
+  };
+
+  if (process.env.BITRIX_CATEGORY_ID) {
+    fields.CATEGORY_ID = Number(process.env.BITRIX_CATEGORY_ID);
+  }
+
+  if (process.env.BITRIX_STAGE_ID) {
+    fields.STAGE_ID = process.env.BITRIX_STAGE_ID;
+  }
+
+  if (contactId) {
+    fields.CONTACT_ID = contactId;
+  }
+
+  const response = await axios.post(bitrixUrl("crm.deal.add"), {
+    fields,
+    params: { REGISTER_SONET_EVENT: "Y" },
+  });
+
+  console.log("Resposta Bitrix (deal):", response.data);
+
+  if (response.data.error) {
+    throw new Error("Erro Bitrix (deal): " + response.data.error_description);
+  }
+
+  return response.data.result; // ID do negócio
+}
+
+// adiciona produtos do pedido ao negócio
+async function setDealProducts(order, dealId) {
+  const items = order.line_items || [];
+
+  if (!items.length) {
+    console.log("Pedido sem itens para adicionar ao negócio.");
+    return;
+  }
+
+  const rows = items.map((item) => ({
+    PRODUCT_NAME: item.title,
+    QUANTITY: item.quantity || 1,
+    PRICE: item.price ? Number(item.price) : 0,
+    // Se quiser vincular a produtos do próprio catálogo do Bitrix, use PRODUCT_ID aqui
+  }));
+
+  const resp = await axios.post(bitrixUrl("crm.deal.productrows.set"), {
+    id: dealId,
+    rows,
+  });
+
+  console.log("Resposta Bitrix (productrows.set):", resp.data);
+
+  if (resp.data.error) {
+    console.error("Erro Bitrix ao definir produtos:", resp.data);
+  }
+}
+
 // Rota que a Shopify chama
 app.post("/webhook", async (req, res) => {
   try {
     const order = req.body;
     console.log("Pedido recebido da Shopify:", order.id, `#${order.name}`);
 
-    // Exemplo: criar um negócio (deal) simples no Bitrix
-    const url = bitrixUrl("crm.deal.add");
+    // 1) Cria contato
+    const contactId = await createBitrixContact(order);
 
-    const payload = {
-      fields: {
-        TITLE: `Pedido Shopify ${order.name || order.id}`,
-        OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
-        CURRENCY_ID: order.currency || "BRL",
-        COMMENTS: `Pedido Shopify bruto:\n${JSON.stringify(order, null, 2)}`,
-      }
-    };
+    // 2) Cria negócio vinculado ao contato
+    const dealId = await createBitrixDeal(order, contactId);
 
-    const response = await axios.post(url, payload);
-
-    console.log("Resposta Bitrix:", response.data);
-
-    if (response.data.error) {
-      console.error("Erro Bitrix:", response.data);
-      return res.status(500).send("Erro Bitrix: " + response.data.error_description);
-    }
+    // 3) Adiciona produtos ao negócio
+    await setDealProducts(order, dealId);
 
     res.status(200).send("OK");
   } catch (err) {
@@ -54,10 +204,16 @@ app.post("/webhook", async (req, res) => {
     if (err.response) {
       console.error("Status:", err.response.status);
       console.error("Data:", err.response.data);
+      res
+        .status(500)
+        .send(
+          "Erro ao integrar (Bitrix): " +
+            (err.response.data.error_description || err.response.data.error || "Erro desconhecido")
+        );
     } else {
       console.error(err.message);
+      res.status(500).send("Erro ao integrar");
     }
-    res.status(500).send("Erro ao integrar");
   }
 });
 
