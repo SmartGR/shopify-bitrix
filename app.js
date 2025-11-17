@@ -10,12 +10,20 @@ app.use(express.json());
 // CONFIG BITRIX
 // -----------------------------------------------------------------------------
 
+// No Render você tem a variável BITRIX_WEBHOOK_BASE.
+// Exemplo: https://smartgr.bitrix24.com.br/rest/12/h0ah2vd1xnc0nncv/
 const rawBase =
   process.env.BITRIX_WEBHOOK_BASE ||
   "https://smartgr.bitrix24.com.br/rest/12/h0ah2vd1xnc0nncv/";
 
-// Remove barras duplicadas e garante apenas 1 no final
+// garante só 1 barra no final
 const BITRIX_WEBHOOK_BASE = rawBase.replace(/\/+$/, "") + "/";
+
+if (!rawBase) {
+  console.error(
+    "ERRO: BITRIX_WEBHOOK_BASE não definido nas variáveis de ambiente"
+  );
+}
 
 function bitrixUrl(method) {
   const url = `${BITRIX_WEBHOOK_BASE}${method}.json`;
@@ -23,26 +31,35 @@ function bitrixUrl(method) {
   return url;
 }
 
-const CATEGORY_ID = 1;
+// -----------------------------------------------------------------------------
+// FUNIL / ESTÁGIOS (VAREJO = CATEGORY_ID 7)
+// -----------------------------------------------------------------------------
 
-// Fases do funil — AJUSTADAS PARA VAREJO
-const STAGE_NEW = "C1:NEW";    // Abordagem e envio material
-const STAGE_WON = "C1:WON";    // Finalizado com sucesso
-const STAGE_LOST = "C1:LOSE";  // Perdido
+const CATEGORY_ID = 7;
+const STAGE_NEW = "C7:NEW";   // Apresentação inicial / início
+const STAGE_WON = "C7:WON";   // Fechados (sucesso)
+const STAGE_LOST = "C7:LOSE"; // Perdido
 
 // -----------------------------------------------------------------------------
 // HELPERS
 // -----------------------------------------------------------------------------
 
+// Define a fase do funil com base no status financeiro da Shopify
 function mapStage(order) {
   const fs = (order.financial_status || "").toLowerCase();
 
-  if (fs === "paid" || fs === "partially_paid") return STAGE_WON;
-  if (fs === "refunded" || fs === "voided") return STAGE_LOST;
+  if (fs === "paid" || fs === "partially_paid") {
+    return STAGE_WON;
+  }
+  if (fs === "refunded" || fs === "voided") {
+    return STAGE_LOST;
+  }
 
+  // pending, authorized, etc…
   return STAGE_NEW;
 }
 
+// Busca negócio no Bitrix pelo ID do pedido da Shopify
 async function findDealByShopifyId(orderId) {
   const resp = await axios.post(bitrixUrl("crm.deal.list"), {
     filter: {
@@ -53,31 +70,109 @@ async function findDealByShopifyId(orderId) {
   });
 
   const result = resp.data.result || [];
-  return result.length > 0 ? result[0].ID : null;
+  if (result.length > 0) {
+    return result[0].ID; // ID do negócio
+  }
+  return null;
+}
+
+// Cria ou reaproveita um Contato no Bitrix com base em e-mail/telefone
+async function findOrCreateContact({ firstName, lastName, email, phone, address }) {
+  try {
+    let contact = null;
+
+    // 1) tenta achar por e-mail
+    if (email) {
+      const respByEmail = await axios.post(bitrixUrl("crm.contact.list"), {
+        filter: { "EMAIL": email },
+        select: ["ID"],
+      });
+      const list = respByEmail.data.result || [];
+      if (list.length > 0) {
+        contact = list[0];
+      }
+    }
+
+    // 2) se não achou por e-mail, tenta por telefone
+    if (!contact && phone) {
+      const respByPhone = await axios.post(bitrixUrl("crm.contact.list"), {
+        filter: { "PHONE": phone },
+        select: ["ID"],
+      });
+      const list = respByPhone.data.result || [];
+      if (list.length > 0) {
+        contact = list[0];
+      }
+    }
+
+    if (contact) {
+      return contact.ID;
+    }
+
+    // 3) se não encontrou, cria um contato novo
+    const fields = {
+      NAME: firstName || email || phone || "Cliente Shopify",
+      LAST_NAME: lastName || "",
+      OPENED: "Y",
+      TYPE_ID: "CLIENT",
+    };
+
+    if (email) {
+      fields.EMAIL = [
+        {
+          VALUE: email,
+          VALUE_TYPE: "WORK",
+        },
+      ];
+    }
+
+    if (phone) {
+      fields.PHONE = [
+        {
+          VALUE: phone,
+          VALUE_TYPE: "MOBILE",
+        },
+      ];
+    }
+
+    if (address) {
+      const addrLine = `${address.address1 || ""} ${address.address2 || ""}`.trim();
+      fields.ADDRESS = addrLine;
+      fields.ADDRESS_CITY = address.city || "";
+      fields.ADDRESS_REGION = address.province || "";
+      fields.ADDRESS_PROVINCE = address.province || "";
+      fields.ADDRESS_POSTAL_CODE = address.zip || "";
+      fields.ADDRESS_COUNTRY = address.country || "";
+    }
+
+    const createResp = await axios.post(bitrixUrl("crm.contact.add"), {
+      fields,
+    });
+
+    if (createResp.data && createResp.data.result) {
+      return createResp.data.result; // ID do contato
+    }
+
+    console.error("Erro ao criar contato no Bitrix:", createResp.data);
+    return null;
+  } catch (e) {
+    console.error("Erro em findOrCreateContact:", e.message);
+    return null;
+  }
 }
 
 // -----------------------------------------------------------------------------
-// ROTA QUE A SHOPIFY USA (NOVO /webhook)
+// ROTA QUE A SHOPIFY CHAMA (WEBHOOKS)
 // -----------------------------------------------------------------------------
 
-app.post("/webhook", (req, res) => {
-  console.log("Webhook recebido em /webhook:", req.body);
-
-  // Redireciona internamente para /shopify-order
-  req.url = "/shopify-order";
-  app.handle(req, res);
-});
-
-// -----------------------------------------------------------------------------
-// ROTA PRINCIPAL DA INTEGRAÇÃO
-// -----------------------------------------------------------------------------
-
-app.post("/shopify-order", async (req, res) => {
+app.post("/webhook", async (req, res) => {
   try {
     const order = req.body;
 
+    const topic = req.headers["x-shopify-topic"] || "";
     console.log(
       "Webhook Shopify recebido:",
+      topic,
       order.id,
       order.name,
       order.financial_status
@@ -95,6 +190,9 @@ app.post("/shopify-order", async (req, res) => {
 
     const email = customer.email || order.email || "";
 
+    const firstName = customer.first_name || (address.first_name || "");
+    const lastName = customer.last_name || (address.last_name || "");
+
     const productsString = (order.line_items || [])
       .map((item) => `${item.quantity}x ${item.title}`)
       .join(", ");
@@ -109,7 +207,7 @@ app.post("/shopify-order", async (req, res) => {
 Status financeiro: ${order.financial_status || "N/A"}
 Status de envio: ${order.fulfillment_status || "N/A"}
 
-Cliente: ${(customer.first_name || "") + " " + (customer.last_name || "")}
+Cliente: ${(firstName || "") + " " + (lastName || "")}
 Email: ${email || "não informado"}
 Telefone: ${phone || "não informado"}
 
@@ -124,16 +222,37 @@ ${productsString || "sem itens"}
 (Atualizado automaticamente pela Shopify)
 `.trim();
 
+    // -------------------------------------------------------------------------
+    // CONTATO (para preencher o campo "Cliente" do negócio)
+    // -------------------------------------------------------------------------
+
+    const contactId = await findOrCreateContact({
+      firstName,
+      lastName,
+      email,
+      phone,
+      address,
+    });
+
+    // -------------------------------------------------------------------------
+    // CAMPOS DO NEGÓCIO
+    // -------------------------------------------------------------------------
+
     const fields = {
       TITLE: `Pedido Shopify ${order.name || order.id}`,
       CATEGORY_ID,
       STAGE_ID: stageToUse,
-      OPPORTUNITY: Number(order.total_price || 0),
+      OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
       CURRENCY_ID: order.currency || "BRL",
 
+      // ligação com a Shopify
       ORIGINATOR_ID: "SHOPIFY",
       ORIGIN_ID: String(order.id),
 
+      // contato vinculado
+      ...(contactId ? { CONTACT_ID: contactId } : {}),
+
+      // endereço no negócio
       ADDRESS: addressLine,
       ADDRESS_CITY: address.city || "",
       ADDRESS_REGION: address.province || "",
@@ -149,7 +268,6 @@ ${productsString || "sem itens"}
     // -------------------------------------------------------------------------
 
     const existingDealId = await findDealByShopifyId(order.id);
-
     let bitrixResponse;
 
     if (existingDealId) {
