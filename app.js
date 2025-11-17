@@ -10,7 +10,7 @@ app.use(express.json());
 // CONFIG BITRIX
 // -----------------------------------------------------------------------------
 
-// Você já tem a variável de ambiente BITRIX_WEBHOOK_BASE no Render.
+// BITRIX_WEBHOOK_BASE vem das variáveis de ambiente do Render.
 // Exemplo de valor: https://smartgr.bitrix24.com.br/rest/12/h0ah2vd1xnc0nncv/
 const rawBase =
   process.env.BITRIX_WEBHOOK_BASE ||
@@ -31,26 +31,40 @@ function bitrixUrl(method) {
   return url;
 }
 
-// Funil VAREJO
+// -----------------------------------------------------------------------------
+// CONFIG DO FUNIL (Varejo)
+// -----------------------------------------------------------------------------
+
+// Funil VAREJO (CATEGORY_ID = 1)
 const CATEGORY_ID = 1;
-const STAGE_NEW = "C1:NEW"; // 1. Abordagem e Envio material
-const STAGE_WON = "C1:WON"; // 6. Fechados (Sucesso)
-// Se o ID interno do seu "7. Perdido" for diferente, troque aqui:
+
+// IDs das fases (confere no Bitrix se estiver diferente)
+const STAGE_NEW = "C1:NEW";   // 1. Abordagem e envio de material
+const STAGE_WON = "C1:WON";   // 6. Fechados
 const STAGE_LOST = "C1:LOSE"; // 7. Perdido
 
 // -----------------------------------------------------------------------------
 // HELPERS
 // -----------------------------------------------------------------------------
 
-// Define a fase do funil com base no status financeiro da Shopify
-function mapStage(order) {
+// Define a fase do funil com base no status financeiro + tópico do webhook
+function mapStage(order, topicRaw) {
+  const topic = (topicRaw || "").toLowerCase();
   const fs = (order.financial_status || "").toLowerCase();
 
-  if (fs === "paid" || fs === "partially_paid") {
-    return STAGE_WON;
-  }
-  if (fs === "refunded" || fs === "voided") {
+  const isCancelled =
+    !!order.cancelled_at || topic.includes("cancelled");
+  const isPaid =
+    topic.includes("paid") ||
+    fs === "paid" ||
+    fs === "partially_paid";
+
+  if (isCancelled) {
     return STAGE_LOST;
+  }
+
+  if (isPaid) {
+    return STAGE_WON;
   }
 
   // pending, authorized, etc.
@@ -74,49 +88,40 @@ async function findDealByShopifyId(orderId) {
   return null;
 }
 
-// -----------------------------------------------------------------------------
-// ROTA QUE A SHOPIFY CHAMA (WEBHOOKS)
-// -----------------------------------------------------------------------------
+// Monta os campos do negócio a partir do pedido
+function buildDealFields(order, topic) {
+  const customer = order.customer || {};
+  const address =
+    order.shipping_address || order.billing_address || {};
 
-app.post("/shopify-order", async (req, res) => {
-  try {
-    const order = req.body;
+  const phone =
+    customer.phone ||
+    address.phone ||
+    order.phone ||
+    "";
 
-    console.log(
-      "Webhook Shopify recebido:",
-      order.id,
-      order.name,
-      order.financial_status
-    );
+  const email = customer.email || order.email || "";
 
-    const customer = order.customer || {};
-    const address =
-      order.shipping_address || order.billing_address || {};
+  const productsString = (order.line_items || [])
+    .map((item) => `${item.quantity}x ${item.title}`)
+    .join(", ");
 
-    const phone =
-      customer.phone ||
-      address.phone ||
-      order.phone ||
-      "";
+  const stageToUse = mapStage(order, topic);
 
-    const email = customer.email || order.email || "";
+  const fullName =
+    `${customer.first_name || ""} ${customer.last_name || ""}`.trim();
 
-    const productsString = (order.line_items || [])
-      .map((item) => `${item.quantity}x ${item.title}`)
-      .join(", ");
+  // Endereço em linha única
+  const addressLine = `${address.address1 || ""} ${
+    address.address2 || ""
+  }`.trim();
 
-    const stageToUse = mapStage(order);
-
-    // Campos de endereço para os campos padrão do Negócio no Bitrix
-    const addressLine = `${address.address1 || ""} ${
-      address.address2 || ""
-    }`.trim();
-
-    const commentsText = `
+  const commentsText = `
 Status financeiro: ${order.financial_status || "N/A"}
 Status de envio: ${order.fulfillment_status || "N/A"}
+Status Shopify: ${order.cancelled_at ? "Cancelado" : "Ativo"}
 
-Cliente: ${(customer.first_name || "") + " " + (customer.last_name || "")}
+Cliente: ${fullName || "N/A"}
 Email: ${email || "não informado"}
 Telefone: ${phone || "não informado"}
 
@@ -131,41 +136,67 @@ ${productsString || "sem itens"}
 (Atualizado automaticamente pela Shopify)
 `.trim();
 
-    const fields = {
-      TITLE: `Pedido Shopify ${order.name || order.id}`,
-      CATEGORY_ID,
-      STAGE_ID: stageToUse,
-      OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
-      CURRENCY_ID: order.currency || "BRL",
+  const fields = {
+    TITLE: `Pedido Shopify ${order.name || order.id}`,
+    CATEGORY_ID,
+    STAGE_ID: stageToUse,
+    OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
+    CURRENCY_ID: order.currency || "BRL",
 
-      // ligação com a Shopify
-      ORIGINATOR_ID: "SHOPIFY",
-      ORIGIN_ID: String(order.id),
+    // ligação com a Shopify
+    ORIGINATOR_ID: "SHOPIFY",
+    ORIGIN_ID: String(order.id),
 
-      // endereço (campos padrão do negócio no Bitrix)
-      ADDRESS: addressLine,
-      ADDRESS_CITY: address.city || "",
-      ADDRESS_REGION: address.province || "",
-      ADDRESS_PROVINCE: address.province || "",
-      ADDRESS_POSTAL_CODE: address.zip || "",
-      ADDRESS_COUNTRY: address.country || "",
+    // endereço (campos padrão do negócio no Bitrix)
+    ADDRESS: addressLine,
+    ADDRESS_CITY: address.city || "",
+    ADDRESS_REGION: address.province || "",
+    ADDRESS_PROVINCE: address.province || "",
+    ADDRESS_POSTAL_CODE: address.zip || "",
+    ADDRESS_COUNTRY: address.country || "",
 
-      COMMENTS: commentsText,
-    };
+    COMMENTS: commentsText,
+  };
+
+  return fields;
+}
+
+// -----------------------------------------------------------------------------
+// HANDLER ÚNICO PARA TODOS OS WEBHOOKS DA SHOPIFY
+// -----------------------------------------------------------------------------
+
+async function shopifyWebhookHandler(req, res) {
+  try {
+    const order = req.body || {};
+    const topic = req.headers["x-shopify-topic"] || "";
+
+    console.log(
+      "Webhook Shopify recebido:",
+      topic,
+      order.id,
+      order.name,
+      order.financial_status
+    );
+
+    // Se por algum motivo vier vazio, loga o body bruto pra debug
+    if (!order.id) {
+      console.log(
+        "Body bruto (sem order.id):",
+        JSON.stringify(req.body).slice(0, 500)
+      );
+    }
+
+    const fields = buildDealFields(order, topic);
 
     // -------------------------------------------------------------------------
     // CRIA OU ATUALIZA NEGÓCIO
     // -------------------------------------------------------------------------
 
     const existingDealId = await findDealByShopifyId(order.id);
-
     let bitrixResponse;
 
     if (existingDealId) {
-      console.log(
-        "Atualizando negócio existente no Bitrix:",
-        existingDealId
-      );
+      console.log("Atualizando negócio existente no Bitrix:", existingDealId);
       bitrixResponse = await axios.post(bitrixUrl("crm.deal.update"), {
         id: existingDealId,
         fields,
@@ -183,9 +214,7 @@ ${productsString || "sem itens"}
       console.error("Erro Bitrix:", bitrixResponse.data);
       return res
         .status(500)
-        .send(
-          "Erro Bitrix: " + bitrixResponse.data.error_description
-        );
+        .send("Erro Bitrix: " + bitrixResponse.data.error_description);
     }
 
     res.status(200).send("OK");
@@ -199,7 +228,21 @@ ${productsString || "sem itens"}
     }
     res.status(500).send("Erro ao integrar");
   }
-});
+}
+
+// -----------------------------------------------------------------------------
+// ROTAS QUE A SHOPIFY CHAMA
+// -----------------------------------------------------------------------------
+//
+// Você configurou na Shopify a URL:
+//   https://shopify-bitrix.onrender.com/webhook
+//
+// Mas como em algum momento já usamos /shopify-order,
+// deixei as duas rotas apontando para o mesmo handler. ;)
+// -----------------------------------------------------------------------------
+
+app.post("/webhook", shopifyWebhookHandler);
+app.post("/shopify-order", shopifyWebhookHandler);
 
 // -----------------------------------------------------------------------------
 // SERVIDOR (Render exige que a app fique ouvindo numa porta)
