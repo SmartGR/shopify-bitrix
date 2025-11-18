@@ -32,6 +32,19 @@ function bitrixUrl(method) {
 }
 
 // -----------------------------------------------------------------------------
+// CAMPOS PERSONALIZADOS (NEGÓCIO)
+// -----------------------------------------------------------------------------
+
+// ID do Pedido Shopify
+const FIELD_SHOPIFY_ID = "UF_CRM_1763463761";
+
+// Cidade (campo personalizado no negócio)
+const FIELD_CITY = "UF_CRM_68F66E4427BDC";
+
+// Estado (campo personalizado no negócio)
+const FIELD_STATE = "UF_CRM_68F66E4434B01";
+
+// -----------------------------------------------------------------------------
 // FUNIL / ESTÁGIOS (VAREJO = CATEGORY_ID 7)
 // -----------------------------------------------------------------------------
 
@@ -59,21 +72,31 @@ function mapStage(order) {
   return STAGE_NEW;
 }
 
-// Busca negócio no Bitrix pelo ID do pedido da Shopify
+// Busca negócio no Bitrix pelo ID do pedido da Shopify (campo personalizado)
 async function findDealByShopifyId(orderId) {
-  const resp = await axios.post(bitrixUrl("crm.deal.list"), {
-    filter: {
-      ORIGINATOR_ID: "SHOPIFY",
-      ORIGIN_ID: String(orderId),
-    },
-    select: ["ID"],
-  });
+  try {
+    const resp = await axios.post(bitrixUrl("crm.deal.list"), {
+      filter: {
+        [FIELD_SHOPIFY_ID]: String(orderId),
+      },
+      select: ["ID"],
+    });
 
-  const result = resp.data.result || [];
-  if (result.length > 0) {
-    return result[0].ID; // ID do negócio
+    const result = resp.data.result || [];
+    if (result.length > 0) {
+      console.log(
+        "Negócio encontrado pelo ID Shopify:",
+        orderId,
+        "→ Deal ID",
+        result[0].ID
+      );
+      return result[0].ID; // ID do negócio
+    }
+    return null;
+  } catch (e) {
+    console.error("Erro ao buscar negócio por ID Shopify:", e.message);
+    return null;
   }
-  return null;
 }
 
 // Cria ou reaproveita um Contato no Bitrix com base em e-mail/telefone
@@ -84,7 +107,7 @@ async function findOrCreateContact({ firstName, lastName, email, phone, address 
     // 1) tenta achar por e-mail
     if (email) {
       const respByEmail = await axios.post(bitrixUrl("crm.contact.list"), {
-        filter: { "EMAIL": email },
+        filter: { EMAIL: email },
         select: ["ID"],
       });
       const list = respByEmail.data.result || [];
@@ -96,7 +119,7 @@ async function findOrCreateContact({ firstName, lastName, email, phone, address 
     // 2) se não achou por e-mail, tenta por telefone
     if (!contact && phone) {
       const respByPhone = await axios.post(bitrixUrl("crm.contact.list"), {
-        filter: { "PHONE": phone },
+        filter: { PHONE: phone },
         select: ["ID"],
       });
       const list = respByPhone.data.result || [];
@@ -161,11 +184,44 @@ async function findOrCreateContact({ firstName, lastName, email, phone, address 
   }
 }
 
+// Define os produtos do negócio a partir dos line_items da Shopify
+async function setDealProducts(dealId, lineItems) {
+  try {
+    if (!dealId) {
+      console.warn("setDealProducts chamado sem dealId");
+      return;
+    }
+
+    if (!Array.isArray(lineItems) || lineItems.length === 0) {
+      console.log("Pedido sem line_items para vincular como produtos.");
+      return;
+    }
+
+    const rows = lineItems.map((item) => ({
+      PRODUCT_NAME: item.title || item.name || "Produto Shopify",
+      PRICE: item.price ? Number(item.price) : 0,
+      QUANTITY: item.quantity ? Number(item.quantity) : 1,
+    }));
+
+    const resp = await axios.post(bitrixUrl("crm.deal.productrows.set"), {
+      id: dealId,
+      rows,
+    });
+
+    console.log("Produtos definidos no negócio:", resp.data);
+  } catch (e) {
+    console.error("Erro ao definir produtos no negócio:", e.response?.data || e.message);
+  }
+}
+
 // -----------------------------------------------------------------------------
 // ROTA QUE A SHOPIFY CHAMA (WEBHOOKS)
 // -----------------------------------------------------------------------------
 
 app.post("/webhook", async (req, res) => {
+  // responde rápido para a Shopify e processa em background
+  res.status(200).send("OK");
+
   try {
     const order = req.body;
 
@@ -190,8 +246,8 @@ app.post("/webhook", async (req, res) => {
 
     const email = customer.email || order.email || "";
 
-    const firstName = customer.first_name || (address.first_name || "");
-    const lastName = customer.last_name || (address.last_name || "");
+    const firstName = customer.first_name || address.first_name || "";
+    const lastName = customer.last_name || address.last_name || "";
 
     const productsString = (order.line_items || [])
       .map((item) => `${item.quantity}x ${item.title}`)
@@ -245,20 +301,27 @@ ${productsString || "sem itens"}
       OPPORTUNITY: order.total_price ? Number(order.total_price) : 0,
       CURRENCY_ID: order.currency || "BRL",
 
-      // ligação com a Shopify
+      // ligação com a Shopify (opcional manter)
       ORIGINATOR_ID: "SHOPIFY",
       ORIGIN_ID: String(order.id),
+
+      // campo personalizado com o ID Shopify (chave de deduplicação)
+      [FIELD_SHOPIFY_ID]: String(order.id),
 
       // contato vinculado
       ...(contactId ? { CONTACT_ID: contactId } : {}),
 
-      // endereço no negócio
+      // endereço no negócio (campos padrão)
       ADDRESS: addressLine,
       ADDRESS_CITY: address.city || "",
       ADDRESS_REGION: address.province || "",
       ADDRESS_PROVINCE: address.province || "",
       ADDRESS_POSTAL_CODE: address.zip || "",
       ADDRESS_COUNTRY: address.country || "",
+
+      // campos personalizados de Cidade / Estado
+      [FIELD_CITY]: address.city || "",
+      [FIELD_STATE]: address.province_code || address.province || "",
 
       COMMENTS: commentsText,
     };
@@ -269,6 +332,7 @@ ${productsString || "sem itens"}
 
     const existingDealId = await findDealByShopifyId(order.id);
     let bitrixResponse;
+    let dealId = existingDealId || null;
 
     if (existingDealId) {
       console.log("Atualizando negócio existente no Bitrix:", existingDealId);
@@ -281,18 +345,26 @@ ${productsString || "sem itens"}
       bitrixResponse = await axios.post(bitrixUrl("crm.deal.add"), {
         fields,
       });
+
+      if (bitrixResponse.data && bitrixResponse.data.result) {
+        dealId = bitrixResponse.data.result;
+        console.log("Negócio criado no Bitrix com ID:", dealId);
+      }
     }
 
-    console.log("Resposta Bitrix:", bitrixResponse.data);
+    if (!dealId && bitrixResponse?.data?.result) {
+      dealId = bitrixResponse.data.result;
+    }
 
-    if (bitrixResponse.data.error) {
+    if (bitrixResponse.data?.error) {
       console.error("Erro Bitrix:", bitrixResponse.data);
-      return res
-        .status(500)
-        .send("Erro Bitrix: " + bitrixResponse.data.error_description);
+      return;
     }
 
-    res.status(200).send("OK");
+    // -------------------------------------------------------------------------
+    // PRODUTOS DO NEGÓCIO
+    // -------------------------------------------------------------------------
+    await setDealProducts(dealId, order.line_items || []);
   } catch (err) {
     console.error("Erro integração Shopify → Bitrix:");
     if (err.response) {
@@ -301,7 +373,6 @@ ${productsString || "sem itens"}
     } else {
       console.error(err.message);
     }
-    res.status(500).send("Erro ao integrar");
   }
 });
 
