@@ -146,25 +146,19 @@ ${productsString}
 
 app.post("/webhooks/bonifiq", async (req, res) => {
   // 1. Log para debug
-  console.log("Webhook Bonifiq recebido:", JSON.stringify(req.body));
+  // console.log("Webhook Bonifiq recebido:", JSON.stringify(req.body));
 
   try {
     const root = req.body;
 
-    // A Bonifiq encapsula os dados dentro de "Payload"
     const data = root.Payload || {};
     const customer = data.Customer || {};
     const balances = data.PointsBalance || {}; // O objeto de saldos
 
-    // Extração dos dados com as chaves em Maiúsculo (conforme seu JSON)
     const customerEmail = customer.Email;
 
-    // Aqui pegamos o "CashbackBalance" (R$ 9 no seu exemplo)
-    // Se quiser os pontos (183), use: balances.PointsBalance
     const currentBalance = balances.CashbackBalance;
 
-    // Validação (verifica se email existe e se saldo não é undefined)
-    // Usamos (currentBalance === undefined) porque o saldo pode ser 0, e 0 é false em JS
     if (!customerEmail || currentBalance === undefined) {
       console.warn(
         `Payload ignorado. Email: ${customerEmail}, Saldo: ${currentBalance}`
@@ -174,9 +168,9 @@ app.post("/webhooks/bonifiq", async (req, res) => {
         .send({ status: "ignored", reason: "missing_data" });
     }
 
-    console.log(
-      `Processando: ${customerEmail} | Novo Saldo Cashback: ${currentBalance}`
-    );
+    // console.log(
+    //   `Processando: ${customerEmail} | Novo Saldo Cashback: ${currentBalance}`
+    // );
 
     // 2. Busca o contato no Bitrix
     const bitrixContact = await findContactByEmail(customerEmail);

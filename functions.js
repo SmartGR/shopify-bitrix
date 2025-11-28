@@ -37,7 +37,7 @@ export async function getShopifyMetafields(orderId) {
 
     const url = `https://${SHOPIFY_DOMAIN}/admin/api/2025-10/orders/${orderId}/metafields.json`;
 
-    console.log(`Buscando metafields na Shopify para Order ID: ${orderId}`);
+    // console.log(`Buscando metafields na Shopify para Order ID: ${orderId}`);
 
     const response = await axios.get(url, {
       headers: {
@@ -45,7 +45,7 @@ export async function getShopifyMetafields(orderId) {
         "Content-Type": "application/json",
       },
     });
-    console.log("algo", url, response);
+
     const metafields = response.data.metafields || [];
 
     const interestMeta = metafields.find(
@@ -175,7 +175,7 @@ export async function setDealProducts(dealId, lineItems) {
 
 export async function findContactByEmail(email) {
   try {
-    const response = await axios.get(`${BITRIX_URL}crm.contact.list`, {
+    const response = await axios.get(`${BITRIX_URL}/crm.contact.list`, {
       params: {
         filter: { EMAIL: email },
         select: ["ID", "NAME", "LAST_NAME", "EMAIL"],
@@ -197,7 +197,7 @@ export async function updateBitrixCashback(contactId, newBalance) {
     const fields = {};
     fields[BITRIX_FIELD] = newBalance;
 
-    const response = await axios.post(`${BITRIX_URL}crm.contact.update`, {
+    const response = await axios.post(`${BITRIX_URL}/crm.contact.update`, {
       id: contactId,
       fields: fields,
     });
