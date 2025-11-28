@@ -1,0 +1,210 @@
+import axios from "axios";
+
+import {
+  STAGE_NEW,
+  STAGE_WON,
+  STAGE_LOST,
+  STATE_MAP,
+  FIELD_SHOPIFY_ID,
+  BITRIX_URL,
+  BITRIX_FIELD,
+  BITRIX_WEBHOOK_BASE,
+  SHOPIFY_ACCESS_TOKEN,
+  SHOPIFY_DOMAIN,
+} from "./constants.js";
+
+export function bitrixUrl(method) {
+  return `${BITRIX_WEBHOOK_BASE}${method}.json`;
+}
+
+export function mapStage(order) {
+  const fs = (order.financial_status || "").toLowerCase();
+  if (fs === "paid" || fs === "partially_paid") return STAGE_WON;
+  if (fs === "refunded" || fs === "voided") return STAGE_LOST;
+  return STAGE_NEW;
+}
+
+export function getBitrixStateId(address) {
+  const uf = (address.province_code || address.province || "")
+    .toUpperCase()
+    .trim();
+  return STATE_MAP[uf] || null;
+}
+
+export async function getShopifyMetafields(orderId) {
+  try {
+    if (!SHOPIFY_ACCESS_TOKEN) return { interest: 0, paidAmount: 0 };
+
+    const url = `https://${SHOPIFY_DOMAIN}/admin/api/2025-10/orders/${orderId}/metafields.json`;
+
+    console.log(`Buscando metafields na Shopify para Order ID: ${orderId}`);
+
+    const response = await axios.get(url, {
+      headers: {
+        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const metafields = response.data.metafields || [];
+
+    const interestMeta = metafields.find(
+      (m) => m.namespace === "pagarme" && m.key === "interest_cents"
+    );
+    const paidMeta = metafields.find(
+      (m) => m.namespace === "pagarme" && m.key === "paid_amount_cents"
+    );
+
+    const interest = interestMeta ? Number(interestMeta.value) / 100 : 0;
+    const paidAmount = paidMeta ? Number(paidMeta.value) / 100 : 0;
+
+    console.log(
+      `Metafields encontrados - Juros: ${interest}, Total Pago: ${paidAmount}`
+    );
+
+    return { interest, paidAmount };
+  } catch (error) {
+    console.error(
+      "Erro ao buscar Metafields Shopify:",
+      error.response?.data || error.message
+    );
+
+    return { interest: 0, paidAmount: 0 };
+  }
+}
+
+export async function findDealByShopifyId(orderId) {
+  try {
+    const resp = await axios.post(bitrixUrl("crm.deal.list"), {
+      filter: { [FIELD_SHOPIFY_ID]: String(orderId) },
+      select: ["ID"],
+    });
+    return resp.data.result?.[0]?.ID || null;
+  } catch (e) {
+    console.error("Erro busca deal:", e.message);
+    return null;
+  }
+}
+
+export async function findOrCreateContact({
+  firstName,
+  lastName,
+  email,
+  phone,
+  address,
+}) {
+  try {
+    let contact = null;
+
+    // 1. Por Email
+    if (email) {
+      const r = await axios.post(bitrixUrl("crm.contact.list"), {
+        filter: { EMAIL: email },
+        select: ["ID"],
+      });
+      contact = r.data.result?.[0];
+    }
+    // 2. Por Telefone
+    if (!contact && phone) {
+      const r = await axios.post(bitrixUrl("crm.contact.list"), {
+        filter: { PHONE: phone },
+        select: ["ID"],
+      });
+      contact = r.data.result?.[0];
+    }
+
+    if (contact) {
+      // Atualizar dados se necessário (ex: telefone)
+      const updateFields = {};
+      if (email) updateFields.EMAIL = [{ VALUE: email, VALUE_TYPE: "WORK" }];
+      if (phone) updateFields.PHONE = [{ VALUE: phone, VALUE_TYPE: "MOBILE" }];
+
+      if (Object.keys(updateFields).length > 0) {
+        await axios
+          .post(bitrixUrl("crm.contact.update"), {
+            id: contact.ID,
+            fields: updateFields,
+          })
+          .catch((e) => console.error("Erro update contato", e.message));
+      }
+      return contact.ID;
+    }
+
+    // 3. Criar
+    const fields = {
+      NAME: firstName || "Cliente",
+      LAST_NAME: lastName || "Shopify",
+      OPENED: "Y",
+      TYPE_ID: "CLIENT",
+      EMAIL: email ? [{ VALUE: email, VALUE_TYPE: "WORK" }] : [],
+      PHONE: phone ? [{ VALUE: phone, VALUE_TYPE: "MOBILE" }] : [],
+    };
+    if (address) {
+      fields.ADDRESS = `${address.address1} ${address.address2 || ""}`.trim();
+      fields.ADDRESS_CITY = address.city;
+      fields.ADDRESS_POSTAL_CODE = address.zip;
+      fields.ADDRESS_PROVINCE = address.province_code;
+    }
+
+    const createResp = await axios.post(bitrixUrl("crm.contact.add"), {
+      fields,
+    });
+    return createResp.data.result;
+  } catch (e) {
+    console.error("Erro criar contato:", e.message);
+    return null;
+  }
+}
+
+export async function setDealProducts(dealId, lineItems) {
+  if (!dealId || !lineItems?.length) return;
+  try {
+    const rows = lineItems.map((item) => ({
+      PRODUCT_NAME: item.title || item.name || "Produto Shopify",
+      PRICE: item.price ? Number(item.price) : 0,
+      QUANTITY: item.quantity ? Number(item.quantity) : 1,
+    }));
+    await axios.post(bitrixUrl("crm.deal.productrows.set"), {
+      id: dealId,
+      rows,
+    });
+  } catch (e) {
+    console.error("Erro produtos:", e.message);
+  }
+}
+
+export async function findContactByEmail(email) {
+  try {
+    const response = await axios.get(`${BITRIX_URL}crm.contact.list`, {
+      params: {
+        filter: { EMAIL: email },
+        select: ["ID", "NAME", "LAST_NAME", "EMAIL"],
+      },
+    });
+
+    if (response.data.result && response.data.result.length > 0) {
+      return response.data.result[0];
+    }
+    return null;
+  } catch (error) {
+    console.error("Erro ao buscar contato no Bitrix:", error.message);
+    throw error;
+  }
+}
+
+export async function updateBitrixCashback(contactId, newBalance) {
+  try {
+    const fields = {};
+    fields[BITRIX_FIELD] = newBalance;
+
+    const response = await axios.post(`${BITRIX_URL}crm.contact.update`, {
+      id: contactId,
+      fields: fields,
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error(`Erro ao atualizar contato ${contactId}:`, error.message);
+    throw error;
+  }
+}
