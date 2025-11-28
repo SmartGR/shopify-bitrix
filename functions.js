@@ -45,7 +45,7 @@ export async function getShopifyMetafields(orderId) {
         "Content-Type": "application/json",
       },
     });
-
+    console.log("algo", url, response);
     const metafields = response.data.metafields || [];
 
     const interestMeta = metafields.find(

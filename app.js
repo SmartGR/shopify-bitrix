@@ -1,5 +1,6 @@
 import express from "express";
 import axios from "axios";
+import dotenv from "dotenv";
 
 import {
   mapStage,
@@ -24,6 +25,8 @@ import {
   FIELD_SELLER,
   FIELD_INTEREST_PAID,
 } from "./constants.js";
+
+dotenv.config();
 
 const app = express();
 app.use(express.json());
@@ -88,7 +91,7 @@ ${productsString}
     const stateId = getBitrixStateId(address);
 
     const orderValue = paidAmount ?? Number(order.total_price) ?? 0;
-
+    console.log("paid", paidAmount, order.total_price);
     const fields = {
       TITLE: `Pedido Shopify ${order.name}`,
       CATEGORY_ID,

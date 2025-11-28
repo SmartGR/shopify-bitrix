@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 export const BITRIX_URL =
   process.env.BITRIX_WEBHOOK_URL ??
   "https://smartgr.bitrix24.com.br/rest/12/h0ah2vd1xnc0nncv";
