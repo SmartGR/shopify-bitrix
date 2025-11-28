@@ -145,40 +145,53 @@ ${productsString}
 });
 
 app.post("/webhooks/bonifiq", async (req, res) => {
+  // 1. Log para debug
   console.log("Webhook Bonifiq recebido:", JSON.stringify(req.body));
 
   try {
-    const payload = req.body;
+    const root = req.body;
 
-    const customerEmail = payload.customer
-      ? payload.customer.email
-      : payload.email;
-    const currentBalance = payload.customer
-      ? payload.customer.balance
-      : payload.balance;
+    // A Bonifiq encapsula os dados dentro de "Payload"
+    const data = root.Payload || {};
+    const customer = data.Customer || {};
+    const balances = data.PointsBalance || {}; // O objeto de saldos
 
+    // Extração dos dados com as chaves em Maiúsculo (conforme seu JSON)
+    const customerEmail = customer.Email;
+
+    // Aqui pegamos o "CashbackBalance" (R$ 9 no seu exemplo)
+    // Se quiser os pontos (183), use: balances.PointsBalance
+    const currentBalance = balances.CashbackBalance;
+
+    // Validação (verifica se email existe e se saldo não é undefined)
+    // Usamos (currentBalance === undefined) porque o saldo pode ser 0, e 0 é false em JS
     if (!customerEmail || currentBalance === undefined) {
-      console.warn("Payload ignorado: E-mail ou Saldo não encontrados.");
+      console.warn(
+        `Payload ignorado. Email: ${customerEmail}, Saldo: ${currentBalance}`
+      );
       return res
-        .status(400)
-        .send({ error: "Dados incompletos (email/balance)" });
+        .status(200)
+        .send({ status: "ignored", reason: "missing_data" });
     }
 
     console.log(
-      `Processando: ${customerEmail} | Novo Saldo: ${currentBalance}`
+      `Processando: ${customerEmail} | Novo Saldo Cashback: ${currentBalance}`
     );
 
+    // 2. Busca o contato no Bitrix
     const bitrixContact = await findContactByEmail(customerEmail);
 
     if (!bitrixContact) {
       console.log(
         `Contato não encontrado no Bitrix para o email: ${customerEmail}. Ignorando.`
       );
+      // Retornamos 200 para a Bonifiq não ficar tentando reenviar se o cliente não existe no CRM
       return res
         .status(200)
         .send({ status: "ignored", reason: "contact_not_found_in_crm" });
     }
 
+    // 3. Atualiza o Bitrix
     await updateBitrixCashback(bitrixContact.ID, currentBalance);
 
     console.log(
@@ -189,7 +202,7 @@ app.post("/webhooks/bonifiq", async (req, res) => {
       .status(200)
       .send({ status: "success", bitrix_id: bitrixContact.ID });
   } catch (error) {
-    console.error("Erro fatal no processamento:", error);
+    console.error("Erro fatal no processamento:", error.message);
     return res.status(500).send({ error: "Internal Server Error" });
   }
 });
