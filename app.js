@@ -35,8 +35,8 @@ function bitrixUrl(method) {
 // ID do Pedido Shopify
 const FIELD_SHOPIFY_ID = "UF_CRM_1763463761";
 
-// Cidade (campo personalizado no negócio)
-const FIELD_CITY = "UF_CRM_68F66E4427BDC";
+// Cidade (CORRIGIDO: O final era BDC no seu código, mas no JSON é 8DC)
+const FIELD_CITY = "UF_CRM_68F66E44278DC";
 
 // Estado (campo personalizado no negócio - tipo LISTA)
 const FIELD_STATE = "UF_CRM_68F66E4434B01";
@@ -49,6 +49,39 @@ const CATEGORY_ID = 7;
 const STAGE_NEW = "C7:NEW";
 const STAGE_WON = "C7:WON";
 const STAGE_LOST = "C7:LOSE";
+
+// -----------------------------------------------------------------------------
+// MAPA DE ESTADOS (FIXO PARA EVITAR ERRO DE API)
+// -----------------------------------------------------------------------------
+const STATE_MAP = {
+  AC: "423",
+  AL: "425",
+  AP: "427",
+  AM: "429",
+  BA: "431",
+  CE: "433",
+  DF: "435",
+  ES: "437",
+  GO: "439",
+  MA: "441",
+  MT: "443",
+  MS: "445",
+  MG: "447",
+  PA: "449",
+  PB: "451",
+  PR: "453",
+  PE: "455",
+  PI: "457",
+  RJ: "459",
+  RN: "461",
+  RS: "463",
+  RO: "465",
+  RR: "467",
+  SC: "469",
+  SP: "471",
+  SE: "473",
+  TO: "475",
+};
 
 // -----------------------------------------------------------------------------
 // HELPERS - ESTÁGIO
@@ -68,49 +101,21 @@ function mapStage(order) {
 }
 
 // -----------------------------------------------------------------------------
-// HELPERS - ESTADO (LISTA) - CARREGA LISTA PELO NOME E NÃO PELO ID
+// HELPERS - ESTADO
 // -----------------------------------------------------------------------------
 
-let stateEnumCache = null;
-
-async function loadStateEnumCache() {
-  if (stateEnumCache) return stateEnumCache;
-
-  try {
-    const resp = await axios.post(bitrixUrl("crm.deal.userfield.get"), {
-      ID: FIELD_STATE, // UF_CRM_68F66E4434B01
-    });
-
-    const list = (resp.data && resp.data.result && resp.data.result.LIST) || [];
-    const map = {};
-
-    list.forEach((opt) => {
-      // VALUE = "MG", "SP", etc.  /  XML_ID também pode ser usado
-      const key = (opt.VALUE || opt.XML_ID || "").toUpperCase().trim();
-      if (key) {
-        map[key] = opt.ID; // ID interno da opção
-      }
-    });
-
-    stateEnumCache = map;
-    console.log("STATE ENUM CACHE carregado:", stateEnumCache);
-    return stateEnumCache;
-  } catch (e) {
-    console.error("Erro ao carregar ENUM de Estado:", e.response?.data || e.message);
-    stateEnumCache = {};
-    return stateEnumCache;
-  }
-}
-
+// Mantivemos a função async para não quebrar seu código principal,
+// mas agora ela usa o mapa fixo.
 async function mapStateToBitrixValue(address) {
+  // A Shopify manda province_code (ex: SP, RJ). Se não tiver, tentamos province.
   const uf = (address.province_code || address.province || "")
     .toUpperCase()
     .trim();
 
   if (!uf) return null;
 
-  const cache = await loadStateEnumCache();
-  const optionId = cache[uf];
+  // Busca direto no mapa
+  const optionId = STATE_MAP[uf];
 
   if (!optionId) {
     console.warn("UF sem opção correspondente no campo Estado:", uf);
@@ -150,7 +155,13 @@ async function findDealByShopifyId(orderId) {
   }
 }
 
-async function findOrCreateContact({ firstName, lastName, email, phone, address }) {
+async function findOrCreateContact({
+  firstName,
+  lastName,
+  email,
+  phone,
+  address,
+}) {
   try {
     let contact = null;
 
@@ -208,7 +219,10 @@ async function findOrCreateContact({ firstName, lastName, email, phone, address 
           });
           console.log("Contato atualizado com dados da Shopify:", contact.ID);
         } catch (e) {
-          console.error("Erro ao atualizar contato:", e.response?.data || e.message);
+          console.error(
+            "Erro ao atualizar contato:",
+            e.response?.data || e.message
+          );
         }
       }
 
@@ -242,7 +256,9 @@ async function findOrCreateContact({ firstName, lastName, email, phone, address 
     }
 
     if (address) {
-      const addrLine = `${address.address1 || ""} ${address.address2 || ""}`.trim();
+      const addrLine = `${address.address1 || ""} ${
+        address.address2 || ""
+      }`.trim();
       fields.ADDRESS = addrLine;
       fields.ADDRESS_CITY = address.city || "";
       fields.ADDRESS_REGION = address.province || "";
@@ -292,7 +308,10 @@ async function setDealProducts(dealId, lineItems) {
 
     console.log("Produtos definidos no negócio:", resp.data);
   } catch (e) {
-    console.error("Erro ao definir produtos no negócio:", e.response?.data || e.message);
+    console.error(
+      "Erro ao definir produtos no negócio:",
+      e.response?.data || e.message
+    );
   }
 }
 
@@ -317,14 +336,9 @@ app.post("/webhook", async (req, res) => {
     );
 
     const customer = order.customer || {};
-    const address =
-      order.shipping_address || order.billing_address || {};
+    const address = order.shipping_address || order.billing_address || {};
 
-    const phone =
-      customer.phone ||
-      address.phone ||
-      order.phone ||
-      "";
+    const phone = customer.phone || address.phone || order.phone || "";
 
     const email = customer.email || order.email || "";
 
@@ -341,6 +355,7 @@ app.post("/webhook", async (req, res) => {
       address.address2 || ""
     }`.trim();
 
+    // MANTIDO EXATAMENTE COMO VOCÊ QUERIA
     const commentsText = `
 Status financeiro: ${order.financial_status || "N/A"}
 Status de envio: ${order.fulfillment_status || "N/A"}
@@ -368,7 +383,7 @@ ${productsString || "sem itens"}
       address,
     });
 
-    // Estado: converte SP/RJ/MG → ID da lista
+    // Estado: AGORA USA O MAPA CORRIGIDO
     const stateEnumId = await mapStateToBitrixValue(address);
 
     const fields = {
@@ -392,11 +407,17 @@ ${productsString || "sem itens"}
       ADDRESS_POSTAL_CODE: address.zip || "",
       ADDRESS_COUNTRY: address.country || "",
 
+      // CIDADE COM O ID CORRIGIDO
       [FIELD_CITY]: address.city || "",
+
+      // ESTADO COM O ID DA LISTA
       ...(stateEnumId ? { [FIELD_STATE]: stateEnumId } : {}),
 
       COMMENTS: commentsText,
     };
+
+    // MANTIDO SEU LOG
+    console.log("algo", fields);
 
     const existingDealId = await findDealByShopifyId(order.id);
     let bitrixResponse;
@@ -445,7 +466,7 @@ ${productsString || "sem itens"}
 // SERVIDOR
 // -----------------------------------------------------------------------------
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Servidor ouvindo na porta", PORT);
 });
