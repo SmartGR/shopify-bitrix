@@ -13,6 +13,10 @@ import {
   SHOPIFY_DOMAIN,
 } from "./constants.js";
 
+let usersCache = null;
+let lastCacheUpdate = 0;
+const CACHE_TTL = 1000 * 60 * 120;
+
 export function bitrixUrl(method) {
   return `${BITRIX_WEBHOOK_BASE}${method}.json`;
 }
@@ -206,5 +210,75 @@ export async function updateBitrixCashback(contactId, newBalance) {
   } catch (error) {
     console.error(`Erro ao atualizar contato ${contactId}:`, error.message);
     throw error;
+  }
+}
+
+export async function getBitrixUserIdByName(fullName) {
+  if (!fullName) return null;
+
+  const now = Date.now();
+
+  // Se não temos cache ou o cache expirou, buscamos tudo de novo
+  if (!usersCache || now - lastCacheUpdate > CACHE_TTL) {
+    console.log("Cache de usuários vazio ou expirado. Buscando no Bitrix...");
+    usersCache = {}; // Reseta
+
+    let start = 0;
+    let hasNext = true;
+
+    try {
+      while (hasNext) {
+        // Chama API com paginação
+        const response = await axios.post(bitrixUrl("user.get"), {
+          start: start,
+        });
+
+        const result = response.data.result || [];
+
+        // Mapeia os usuários desta página
+        result.forEach((user) => {
+          // Monta "Thayla Caperucci"
+          const name = user.NAME || "";
+          const lastName = user.LAST_NAME || "";
+          const completeName = `${name} ${lastName}`.trim().toUpperCase();
+
+          // Salva no mapa: CHAVE (Nome Maiúsculo) -> VALOR (ID)
+          if (completeName) {
+            usersCache[completeName] = user.ID;
+          }
+        });
+
+        // Lógica de Paginação (next)
+        if (response.data.next) {
+          start = response.data.next;
+        } else {
+          hasNext = false;
+        }
+      }
+
+      lastCacheUpdate = now;
+      console.log(
+        `Cache de usuários atualizado. Total mapeado: ${
+          Object.keys(usersCache).length
+        }`
+      );
+    } catch (e) {
+      console.error("Erro ao buscar usuários do Bitrix:", e.message);
+      // Se der erro, não quebramos, apenas retornamos null para este pedido
+      return null;
+    }
+  }
+
+  // Tenta encontrar o ID
+  // Normaliza o nome que veio da Shopify (trim e uppercase)
+  const normalizedSearch = fullName.trim().toUpperCase();
+  const foundId = usersCache[normalizedSearch];
+
+  if (foundId) {
+    console.log(`Vendedor encontrado: "${fullName}" -> ID ${foundId}`);
+    return foundId;
+  } else {
+    console.warn(`Vendedor não encontrado no Bitrix: "${fullName}"`);
+    return null;
   }
 }

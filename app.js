@@ -12,6 +12,7 @@ import {
   findDealByShopifyId,
   findContactByEmail,
   bitrixUrl,
+  getBitrixUserIdByName,
 } from "./functions.js";
 
 import {
@@ -55,6 +56,11 @@ app.post("/webhook", async (req, res) => {
       (attr) => attr.name === "Affiliate"
     );
     const vendedorValue = affiliateObj ? affiliateObj.value : "";
+
+    let assignedById = null;
+    if (vendedorName) {
+      assignedById = await getBitrixUserIdByName(vendedorName);
+    }
 
     const { interest, paidAmount } = await getShopifyMetafields(order.id);
 
@@ -116,6 +122,7 @@ ${productsString}
       [FIELD_INTEREST_PAID]: interest ?? null,
 
       COMMENTS: commentsText,
+      ...(assignedById ? { ASSIGNED_BY_ID: assignedById } : {}),
     };
 
     console.log("Payload Deal:", JSON.stringify(fields, null, 2));
