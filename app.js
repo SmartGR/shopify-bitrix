@@ -58,8 +58,8 @@ app.post("/webhook", async (req, res) => {
     const vendedorValue = affiliateObj ? affiliateObj.value : "";
 
     let assignedById = null;
-    if (vendedorName) {
-      assignedById = await getBitrixUserIdByName(vendedorName);
+    if (vendedorValue) {
+      assignedById = await getBitrixUserIdByName(vendedorValue);
     }
 
     const { interest, paidAmount } = await getShopifyMetafields(order.id);
