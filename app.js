@@ -98,7 +98,7 @@ ${productsString}
     const stateId = getBitrixStateId(address);
 
     const orderValue = paidAmount ?? Number(order.total_price) ?? 0;
-    console.log("paid", paidAmount, order.total_price);
+
     const fields = {
       TITLE: `Pedido Shopify ${order.name}`,
       CATEGORY_ID,
@@ -125,8 +125,6 @@ ${productsString}
       COMMENTS: commentsText,
       ...(assignedById ? { ASSIGNED_BY_ID: assignedById } : {}),
     };
-
-    console.log("Payload Deal:", JSON.stringify(fields, null, 2));
 
     const existingDealId = await findDealByShopifyId(order.id);
     let dealId = existingDealId;
@@ -157,9 +155,10 @@ app.post("/webhooks/bonifiq", async (req, res) => {
     const root = req.body;
 
     const data = root.Payload || {};
+    console.log("root", JSON.stringify(root, null, 2));
+
     const customer = data.Customer || {};
     const balances = data.PointsBalance || {};
-
     const customerEmail = customer.Email;
 
     const currentBalance = balances.CashbackBalance;

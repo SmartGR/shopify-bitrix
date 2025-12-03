@@ -274,7 +274,7 @@ export async function getBitrixUserIdByName(fullName) {
   }
 }
 
-async function getEduvemDataFromProduct(productId) {
+export async function getEduvemDataFromProduct(productId) {
   try {
     const url = `https://${process.env.SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/products/${productId}/metafields.json`;
 
