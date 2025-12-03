@@ -152,15 +152,12 @@ ${productsString}
 });
 
 app.post("/webhooks/bonifiq", async (req, res) => {
-  // 1. Log para debug
-  // console.log("Webhook Bonifiq recebido:", JSON.stringify(req.body));
-
   try {
     const root = req.body;
 
     const data = root.Payload || {};
     const customer = data.Customer || {};
-    const balances = data.PointsBalance || {}; // O objeto de saldos
+    const balances = data.PointsBalance || {};
 
     const customerEmail = customer.Email;
 
@@ -175,24 +172,18 @@ app.post("/webhooks/bonifiq", async (req, res) => {
         .send({ status: "ignored", reason: "missing_data" });
     }
 
-    // console.log(
-    //   `Processando: ${customerEmail} | Novo Saldo Cashback: ${currentBalance}`
-    // );
-
-    // 2. Busca o contato no Bitrix
     const bitrixContact = await findContactByEmail(customerEmail);
 
     if (!bitrixContact) {
       console.log(
         `Contato não encontrado no Bitrix para o email: ${customerEmail}. Ignorando.`
       );
-      // Retornamos 200 para a Bonifiq não ficar tentando reenviar se o cliente não existe no CRM
+
       return res
         .status(200)
         .send({ status: "ignored", reason: "contact_not_found_in_crm" });
     }
 
-    // 3. Atualiza o Bitrix
     await updateBitrixCashback(bitrixContact.ID, currentBalance);
 
     console.log(
@@ -205,6 +196,58 @@ app.post("/webhooks/bonifiq", async (req, res) => {
   } catch (error) {
     console.error("Erro fatal no processamento:", error.message);
     return res.status(500).send({ error: "Internal Server Error" });
+  }
+});
+
+app.post("/webhooks/shopify/enroll", async (req, res) => {
+  res.status(200).send("Processing Enrollment");
+
+  try {
+    const order = req.body;
+    console.log(
+      `[Eduvem] Iniciando processamento pedido: ${order.name} (${order.id})`
+    );
+
+    const customer = order.customer || {};
+
+    const noteAttributes = order.note_attributes || [];
+    const cpfAttr = noteAttributes.find(
+      (attr) =>
+        attr.name.toLowerCase() === "cpf" || attr.name.toLowerCase() === "cnpj"
+    );
+    const studentDocument = cpfAttr
+      ? cpfAttr.value
+      : customer?.tax_exemptions?.[0] || "";
+
+    const studentData = {
+      fullName: `${customer.first_name} ${customer.last_name}`.trim(),
+      email: customer.email,
+      document: studentDocument.replace(/\D/g, ""),
+    };
+
+    if (!studentData.email) {
+      console.warn("[Eduvem] Email não encontrado. Abortando.");
+      return;
+    }
+
+    for (const item of order.line_items) {
+      const productId = item.product_id;
+
+      const courseClassUUID = await getEduvemClassIdFromProduct(productId);
+
+      if (courseClassUUID) {
+        console.log(
+          `[Eduvem] Produto "${item.title}" tem ID de turma: ${courseClassUUID}. Matriculando...`
+        );
+        await enrollStudent(studentData, courseClassUUID);
+      } else {
+        console.log(
+          `[Eduvem] Produto "${item.title}" (ID: ${productId}) não possui metafield 'custom.eduvem_class_id'. Ignorando.`
+        );
+      }
+    }
+  } catch (error) {
+    console.error("[Eduvem] Erro fatal no webhook:", error.message);
   }
 });
 

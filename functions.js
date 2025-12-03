@@ -16,6 +16,10 @@ import {
 let usersCache = null;
 let lastCacheUpdate = 0;
 const CACHE_TTL = 1000 * 60 * 120;
+const API_VERSION = "2025-10";
+
+const EDUVEM_API_URL =
+  "https://smartgr.eduvem.com/api/integrations/courseClasses";
 
 export function bitrixUrl(method) {
   return `${BITRIX_WEBHOOK_BASE}${method}.json`;
@@ -39,9 +43,7 @@ export async function getShopifyMetafields(orderId) {
   try {
     if (!SHOPIFY_ACCESS_TOKEN) return { interest: 0, paidAmount: 0 };
 
-    const url = `https://${SHOPIFY_DOMAIN}/admin/api/2025-10/orders/${orderId}/metafields.json`;
-
-    // console.log(`Buscando metafields na Shopify para Order ID: ${orderId}`);
+    const url = `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/orders/${orderId}/metafields.json`;
 
     const response = await axios.get(url, {
       headers: {
@@ -100,7 +102,6 @@ export async function findOrCreateContact({
   try {
     let contact = null;
 
-    // 1. Por Email
     if (email) {
       const r = await axios.post(bitrixUrl("crm.contact.list"), {
         filter: { EMAIL: email },
@@ -108,7 +109,7 @@ export async function findOrCreateContact({
       });
       contact = r.data.result?.[0];
     }
-    // 2. Por Telefone
+
     if (!contact && phone) {
       const r = await axios.post(bitrixUrl("crm.contact.list"), {
         filter: { PHONE: phone },
@@ -118,7 +119,6 @@ export async function findOrCreateContact({
     }
 
     if (contact) {
-      // Atualizar dados se necessário (ex: telefone)
       const updateFields = {};
       if (email) updateFields.EMAIL = [{ VALUE: email, VALUE_TYPE: "WORK" }];
       if (phone) updateFields.PHONE = [{ VALUE: phone, VALUE_TYPE: "MOBILE" }];
@@ -134,7 +134,6 @@ export async function findOrCreateContact({
       return contact.ID;
     }
 
-    // 3. Criar
     const fields = {
       NAME: firstName || "Cliente",
       LAST_NAME: lastName || "Shopify",
@@ -218,37 +217,31 @@ export async function getBitrixUserIdByName(fullName) {
 
   const now = Date.now();
 
-  // Se não temos cache ou o cache expirou, buscamos tudo de novo
   if (!usersCache || now - lastCacheUpdate > CACHE_TTL) {
     console.log("Cache de usuários vazio ou expirado. Buscando no Bitrix...");
-    usersCache = {}; // Reseta
+    usersCache = {};
 
     let start = 0;
     let hasNext = true;
 
     try {
       while (hasNext) {
-        // Chama API com paginação
         const response = await axios.post(bitrixUrl("user.get"), {
           start: start,
         });
 
         const result = response.data.result || [];
 
-        // Mapeia os usuários desta página
         result.forEach((user) => {
-          // Monta "Thayla Caperucci"
           const name = user.NAME || "";
           const lastName = user.LAST_NAME || "";
           const completeName = `${name} ${lastName}`.trim().toUpperCase();
 
-          // Salva no mapa: CHAVE (Nome Maiúsculo) -> VALOR (ID)
           if (completeName) {
             usersCache[completeName] = user.ID;
           }
         });
 
-        // Lógica de Paginação (next)
         if (response.data.next) {
           start = response.data.next;
         } else {
@@ -264,13 +257,10 @@ export async function getBitrixUserIdByName(fullName) {
       );
     } catch (e) {
       console.error("Erro ao buscar usuários do Bitrix:", e.message);
-      // Se der erro, não quebramos, apenas retornamos null para este pedido
       return null;
     }
   }
 
-  // Tenta encontrar o ID
-  // Normaliza o nome que veio da Shopify (trim e uppercase)
   const normalizedSearch = fullName.trim().toUpperCase();
   const foundId = usersCache[normalizedSearch];
 
@@ -280,5 +270,66 @@ export async function getBitrixUserIdByName(fullName) {
   } else {
     console.warn(`Vendedor não encontrado no Bitrix: "${fullName}"`);
     return null;
+  }
+}
+
+async function getEduvemClassIdFromProduct(productId) {
+  try {
+    const url = `https://${process.env.SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/products/${productId}/metafields.json`;
+
+    const response = await axios.get(url, {
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const metafields = response.data.metafields;
+
+    const targetMetafield = metafields.find(
+      (m) => m.namespace === "custom" && m.key === "id_sala_eduvem"
+    );
+
+    return targetMetafield ? targetMetafield.value : null;
+  } catch (error) {
+    console.error(
+      `Erro ao buscar metafield para produto ${productId}:`,
+      error.message
+    );
+    return null;
+  }
+}
+
+export async function enrollStudent(student, courseUUID) {
+  try {
+    const payload = {
+      courseClassUUID: courseUUID,
+      fullName: student.fullName,
+      email: student.email,
+      options: {
+        purchasingEntityName: "Shopify Store",
+        enrollments: 1,
+        document: student.document,
+      },
+    };
+
+    const authHeader = process.env.EDUVEM_API_TOKEN.startsWith("Bearer")
+      ? process.env.EDUVEM_API_TOKEN
+      : `Bearer ${process.env.EDUVEM_API_TOKEN}`;
+
+    const response = await axios.post(EDUVEM_API_URL, payload, {
+      headers: {
+        Authorization: `Bearer ${process.env.EDUVEM_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    console.log(`[Eduvem] SUCESSO! Aluno ${student.email} matriculado.`);
+    return response.data;
+  } catch (err) {
+    const errorMsg = err.response?.data
+      ? JSON.stringify(err.response.data)
+      : err.message;
+    console.error(`[Eduvem] FALHA ao matricular: ${errorMsg}`);
   }
 }
