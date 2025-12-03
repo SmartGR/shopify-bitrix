@@ -158,10 +158,11 @@ app.post("/webhooks/bonifiq", async (req, res) => {
     console.log("root", JSON.stringify(root, null, 2));
 
     const customer = data.Customer || {};
-    const balances = data.PointsBalance || {};
+    const balance = data.PointsBalance || {};
     const customerEmail = customer.Email;
+    const points = balance?.PointsBalance;
 
-    const currentBalance = balances.CashbackBalance;
+    const currentBalance = points * 0.05;
 
     if (!customerEmail || currentBalance === undefined) {
       console.warn(
