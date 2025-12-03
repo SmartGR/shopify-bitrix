@@ -20,6 +20,7 @@ const API_VERSION = "2025-10";
 
 const EDUVEM_API_URL =
   "https://smartgr.eduvem.com/api/integrations/courseClasses";
+const EDUVEM_TEAM_API_URL = "https://smartgr.eduvem.com/api/integrations/teams"; // Nova URL
 
 export function bitrixUrl(method) {
   return `${BITRIX_WEBHOOK_BASE}${method}.json`;
@@ -273,7 +274,7 @@ export async function getBitrixUserIdByName(fullName) {
   }
 }
 
-async function getEduvemClassIdFromProduct(productId) {
+async function getEduvemDataFromProduct(productId) {
   try {
     const url = `https://${process.env.SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/products/${productId}/metafields.json`;
 
@@ -286,17 +287,24 @@ async function getEduvemClassIdFromProduct(productId) {
 
     const metafields = response.data.metafields;
 
-    const targetMetafield = metafields.find(
+    const classMeta = metafields.find(
       (m) => m.namespace === "custom" && m.key === "id_sala_eduvem"
     );
 
-    return targetMetafield ? targetMetafield.value : null;
+    const teamMeta = metafields.find(
+      (m) => m.namespace === "custom" && m.key === "id_do_grupo_eduvem"
+    );
+
+    return {
+      courseClassUUID: classMeta ? classMeta.value : null,
+      teamUUID: teamMeta ? teamMeta.value : null,
+    };
   } catch (error) {
     console.error(
-      `Erro ao buscar metafield para produto ${productId}:`,
+      `Erro ao buscar metafields para produto ${productId}:`,
       error.message
     );
-    return null;
+    return { courseClassUUID: null, teamUUID: null };
   }
 }
 
@@ -331,5 +339,37 @@ export async function enrollStudent(student, courseUUID) {
       ? JSON.stringify(err.response.data)
       : err.message;
     console.error(`[Eduvem] FALHA ao matricular: ${errorMsg}`);
+  }
+}
+
+export async function enrollStudentInTeam(student, teamUUID) {
+  try {
+    const payload = {
+      teamUUID: teamUUID,
+      fullName: student.fullName,
+      email: student.email,
+      options: {
+        purchasingEntityName: "Shopify Store",
+        enrollments: 1,
+        document: student.document,
+      },
+    };
+
+    const response = await axios.post(EDUVEM_TEAM_API_URL, payload, {
+      headers: {
+        Authorization: `Bearer ${process.env.EDUVEM_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    console.log(
+      `[Eduvem] SUCESSO! Aluno ${student.email} adicionado ao GRUPO.`
+    );
+    return response.data;
+  } catch (err) {
+    const errorMsg = err.response?.data
+      ? JSON.stringify(err.response.data)
+      : err.message;
+    console.error(`[Eduvem] FALHA ao adicionar ao grupo: ${errorMsg}`);
   }
 }

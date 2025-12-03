@@ -13,6 +13,7 @@ import {
   findContactByEmail,
   bitrixUrl,
   getBitrixUserIdByName,
+  getEduvemDataFromProduct,
 } from "./functions.js";
 
 import {
@@ -209,8 +210,8 @@ app.post("/webhooks/shopify/enroll", async (req, res) => {
     );
 
     const customer = order.customer || {};
-
     const noteAttributes = order.note_attributes || [];
+
     const cpfAttr = noteAttributes.find(
       (attr) =>
         attr.name.toLowerCase() === "cpf" || attr.name.toLowerCase() === "cnpj"
@@ -233,16 +234,27 @@ app.post("/webhooks/shopify/enroll", async (req, res) => {
     for (const item of order.line_items) {
       const productId = item.product_id;
 
-      const courseClassUUID = await getEduvemClassIdFromProduct(productId);
+      const { courseClassUUID, teamUUID } = await getEduvemDataFromProduct(
+        productId
+      );
 
       if (courseClassUUID) {
         console.log(
-          `[Eduvem] Produto "${item.title}" tem ID de turma: ${courseClassUUID}. Matriculando...`
+          `[Eduvem] Produto "${item.title}" é SALA: ${courseClassUUID}. Matriculando...`
         );
         await enrollStudent(studentData, courseClassUUID);
-      } else {
+      }
+
+      if (teamUUID) {
         console.log(
-          `[Eduvem] Produto "${item.title}" (ID: ${productId}) não possui metafield 'custom.eduvem_class_id'. Ignorando.`
+          `[Eduvem] Produto "${item.title}" é GRUPO: ${teamUUID}. Adicionando...`
+        );
+        await enrollStudentInTeam(studentData, teamUUID);
+      }
+
+      if (!courseClassUUID && !teamUUID) {
+        console.log(
+          `[Eduvem] Produto "${item.title}" (ID: ${productId}) não possui metafields de integração.`
         );
       }
     }
