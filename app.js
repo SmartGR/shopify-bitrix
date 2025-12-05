@@ -15,6 +15,8 @@ import {
   getBitrixUserIdByName,
   getEduvemDataFromProduct,
   getShopifyOrder,
+  enrollStudent,
+  enrollStudentInTeam,
 } from "./functions.js";
 
 import {
