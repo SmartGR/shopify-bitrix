@@ -40,6 +40,29 @@ export function getBitrixStateId(address) {
   return STATE_MAP[uf] || null;
 }
 
+export async function getShopifyOrder(orderId) {
+  try {
+    if (!SHOPIFY_ACCESS_TOKEN) return null;
+
+    const url = `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/orders/${orderId}.json`;
+
+    const response = await axios.get(url, {
+      headers: {
+        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+        "Content-Type": "application/json",
+      },
+    });
+
+    return response.data.order;
+  } catch (error) {
+    console.error(
+      "Erro ao buscar Order Shopify Full:",
+      error.response?.data || error.message
+    );
+    return null;
+  }
+}
+
 export async function getShopifyMetafields(orderId) {
   try {
     if (!SHOPIFY_ACCESS_TOKEN) return { interest: 0, paidAmount: 0 };

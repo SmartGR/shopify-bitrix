@@ -14,6 +14,7 @@ import {
   bitrixUrl,
   getBitrixUserIdByName,
   getEduvemDataFromProduct,
+  getShopifyOrder,
 } from "./functions.js";
 
 import {
@@ -46,17 +47,18 @@ app.post("/webhook", async (req, res) => {
     const order = req.body;
     console.log(`Webhook recebido. Pedido: ${order.name} (${order.id})`);
 
+    const apiOrder = await getShopifyOrder(order.id);
+
     const customer = order.customer || {};
     const address = order.shipping_address || order.billing_address || {};
     const email = customer.email || order.email || "";
     const phone = address.phone || customer.phone || order.phone || "";
     const firstName = address.first_name || customer.first_name || "";
     const lastName = address.last_name || customer.last_name || "";
-    console.log("orderNote", order.note);
 
-    let codRastreio = order.note ?? "";
+    let codRastreio = apiOrder.note ?? "";
 
-    const noteAttributes = order.note_attributes || [];
+    const noteAttributes = apiOrder.note_attributes || [];
     const affiliateObj = noteAttributes.find(
       (attr) => attr.name === "Affiliate"
     );
@@ -104,6 +106,8 @@ ${productsString}
     const orderValue = paidAmount ?? Number(order.total_price) ?? 0;
 
     codRastreio = codRastreio?.replace("Cód. de Rastreamento:", "").trim();
+
+    console.log("orderNote", apiOrder.note);
 
     const fields = {
       TITLE: `Pedido Shopify ${order.name}`,
