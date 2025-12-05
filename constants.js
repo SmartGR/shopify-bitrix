@@ -21,6 +21,8 @@ export const FIELD_STATE = "UF_CRM_68F66E4434B01";
 export const FIELD_SELLER = "UF_CRM_1764318998507";
 export const FIELD_INTEREST_PAID = "UF_CRM_1764319334638";
 
+export const FIELD_COD_RASTREIO = "UF_CRM_1764938272694";
+
 export const CATEGORY_ID = 7;
 export const STAGE_NEW = "C7:NEW";
 export const STAGE_WON = "C7:WON";

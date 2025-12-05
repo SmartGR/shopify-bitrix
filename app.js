@@ -26,6 +26,7 @@ import {
   FIELD_STATE,
   FIELD_SELLER,
   FIELD_INTEREST_PAID,
+  FIELD_COD_RASTREIO,
 } from "./constants.js";
 
 dotenv.config();
@@ -53,7 +54,7 @@ app.post("/webhook", async (req, res) => {
     const lastName = address.last_name || customer.last_name || "";
     console.log("orderNote", order.note);
 
-    const rastreio = order.note ?? "";
+    let codRastreio = order.note ?? "";
 
     const noteAttributes = order.note_attributes || [];
     const affiliateObj = noteAttributes.find(
@@ -102,6 +103,8 @@ ${productsString}
 
     const orderValue = paidAmount ?? Number(order.total_price) ?? 0;
 
+    codRastreio = codRastreio?.replace("Cód. de Rastreamento:", "").trim();
+
     const fields = {
       TITLE: `Pedido Shopify ${order.name}`,
       CATEGORY_ID,
@@ -124,6 +127,7 @@ ${productsString}
 
       [FIELD_SELLER]: vendedorValue,
       [FIELD_INTEREST_PAID]: interest ?? null,
+      [FIELD_COD_RASTREIO]: codRastreio ?? null,
 
       COMMENTS: commentsText,
       ...(assignedById ? { ASSIGNED_BY_ID: assignedById } : {}),
