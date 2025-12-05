@@ -52,6 +52,9 @@ app.post("/webhook", async (req, res) => {
     const firstName = address.first_name || customer.first_name || "";
     const lastName = address.last_name || customer.last_name || "";
     console.log("orderNote", order.note);
+
+    const rastreio = order.note ?? "";
+
     const noteAttributes = order.note_attributes || [];
     const affiliateObj = noteAttributes.find(
       (attr) => attr.name === "Affiliate"
@@ -62,7 +65,7 @@ app.post("/webhook", async (req, res) => {
     if (vendedorValue) {
       assignedById = await getBitrixUserIdByName(vendedorValue);
     }
-
+    console.log("vendedor", assignedById, vendedorValue);
     const { interest, paidAmount } = await getShopifyMetafields(order.id);
 
     const productsString = (order.line_items || [])
