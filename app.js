@@ -51,7 +51,7 @@ app.post("/webhook", async (req, res) => {
     const phone = address.phone || customer.phone || order.phone || "";
     const firstName = address.first_name || customer.first_name || "";
     const lastName = address.last_name || customer.last_name || "";
-
+    console.log("orderNote", order.note);
     const noteAttributes = order.note_attributes || [];
     const affiliateObj = noteAttributes.find(
       (attr) => attr.name === "Affiliate"
