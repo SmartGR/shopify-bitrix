@@ -12,6 +12,7 @@ import {
   SHOPIFY_ACCESS_TOKEN,
   SHOPIFY_DOMAIN,
   FIELD_CASHBACK_EXPIRATION,
+  BONIFIQ_API_URL,
 } from "./constants.js";
 
 let usersCache = null;
