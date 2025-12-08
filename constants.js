@@ -23,6 +23,8 @@ export const FIELD_INTEREST_PAID = "UF_CRM_1764319334638";
 
 export const FIELD_COD_RASTREIO = "UF_CRM_1764938272694";
 
+export const FIELD_CASHBACK_EXPIRATION = "UF_CRM_1765182785785";
+
 export const CATEGORY_ID = 7;
 export const STAGE_NEW = "C7:NEW";
 export const STAGE_WON = "C7:WON";
@@ -57,3 +59,5 @@ export const STATE_MAP = {
   SE: "473",
   TO: "475",
 };
+
+export const BONIFIQ_API_URL = "https://api.bonifiq.com.br/v1/pvt/Customer";

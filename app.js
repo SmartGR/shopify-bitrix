@@ -17,6 +17,7 @@ import {
   getShopifyOrder,
   enrollStudent,
   enrollStudentInTeam,
+  getBonifiqCustomerData,
 } from "./functions.js";
 
 import {
@@ -37,19 +38,19 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+const orderQueues = new Map();
+
 if (!process.env.SHOPIFY_ACCESS_TOKEN)
   console.warn(
     "ALERTA: SHOPIFY_ACCESS_TOKEN não definido. Juros não serão processados."
   );
 
-app.post("/webhook", async (req, res) => {
-  res.status(200).send("OK");
-
+async function processOrderWebhook(order) {
   try {
-    const order = req.body;
-    console.log(`Webhook recebido. Pedido: ${order.name} (${order.id})`);
+    console.log(`[PROCESSANDO] Pedido: ${order.name} (${order.id})`);
 
     const apiOrder = await getShopifyOrder(order.id);
+    const orderData = apiOrder || order;
 
     const customer = order.customer || {};
     const address = order.shipping_address || order.billing_address || {};
@@ -58,9 +59,9 @@ app.post("/webhook", async (req, res) => {
     const firstName = address.first_name || customer.first_name || "";
     const lastName = address.last_name || customer.last_name || "";
 
-    let codRastreio = apiOrder.note ?? "";
+    let codRastreio = orderData.note ?? "";
 
-    const noteAttributes = apiOrder.note_attributes || [];
+    const noteAttributes = orderData.note_attributes || [];
     const affiliateObj = noteAttributes.find(
       (attr) => attr.name === "Affiliate"
     );
@@ -70,7 +71,7 @@ app.post("/webhook", async (req, res) => {
     if (vendedorValue) {
       assignedById = await getBitrixUserIdByName(vendedorValue);
     }
-    console.log("vendedor", assignedById, vendedorValue);
+
     const { interest, paidAmount } = await getShopifyMetafields(order.id);
 
     const productsString = (order.line_items || [])
@@ -104,12 +105,10 @@ ${productsString}
 
     const cityValue = address.city || "";
     const stateId = getBitrixStateId(address);
-
-    const orderValue = paidAmount ?? Number(order.total_price) ?? 0;
+    const orderValue =
+      paidAmount > 0 ? paidAmount : Number(order.total_price) ?? 0;
 
     codRastreio = codRastreio?.replace("Cód. de Rastreamento:", "").trim();
-
-    console.log("orderNote", apiOrder.note);
 
     const fields = {
       TITLE: `Pedido Shopify ${order.name}`,
@@ -118,49 +117,70 @@ ${productsString}
       OPPORTUNITY: orderValue,
       CURRENCY_ID: order.currency || "BRL",
       IS_MANUAL_OPPORTUNITY: "Y",
-
       ORIGINATOR_ID: "SHOPIFY",
       ORIGIN_ID: String(order.id),
       [FIELD_SHOPIFY_ID]: String(order.id),
-
       ...(contactId ? { CONTACT_ID: contactId } : {}),
-
       ADDRESS: `${address.address1} ${address.address2 || ""}`.trim(),
       ADDRESS_CITY: address.city || "",
       ADDRESS_POSTAL_CODE: address.zip || "",
       [FIELD_CITY]: cityValue,
       ...(stateId ? { [FIELD_STATE]: stateId } : {}),
-
       [FIELD_SELLER]: vendedorValue,
       [FIELD_INTEREST_PAID]: interest ?? null,
       [FIELD_COD_RASTREIO]: codRastreio ?? null,
-
       COMMENTS: commentsText,
       ...(assignedById ? { ASSIGNED_BY_ID: assignedById } : {}),
     };
 
+    // Lógica principal de Criação/Atualização
     const existingDealId = await findDealByShopifyId(order.id);
     let dealId = existingDealId;
 
     if (existingDealId) {
-      console.log(`Atualizando Deal ${existingDealId}...`);
+      console.log(
+        `[ATUALIZAR] Deal encontrado: ${existingDealId}. Atualizando...`
+      );
       await axios.post(bitrixUrl("crm.deal.update"), {
         id: existingDealId,
         fields,
       });
     } else {
-      console.log("Criando novo Deal...");
+      console.log("[CRIAR] Deal não encontrado. Criando novo...");
       const r = await axios.post(bitrixUrl("crm.deal.add"), { fields });
       dealId = r.data.result;
-      console.log(`Deal criado: ${dealId}`);
+      console.log(`[CRIADO] Novo Deal ID: ${dealId}`);
     }
 
     if (dealId) {
       await setDealProducts(dealId, order.line_items || []);
     }
   } catch (err) {
-    console.error("Erro Processamento Webhook:", err.message);
+    console.error(`Erro ao processar ID ${order.id}:`, err.message);
   }
+}
+
+app.post("/webhook", (req, res) => {
+  res.status(200).send("OK");
+
+  const order = req.body;
+  const orderId = String(order.id);
+
+  console.log(`[WEBHOOK] Recebido para ID ${orderId}`);
+
+  const currentQueue = orderQueues.get(orderId) || Promise.resolve();
+
+  const nextTask = currentQueue
+    .then(() => processOrderWebhook(order))
+    .catch((err) => console.error(`Erro na fila do ID ${orderId}:`, err))
+    .finally(() => {
+      if (orderQueues.get(orderId) === nextTask) {
+        orderQueues.delete(orderId);
+        console.log(`[FILA] Fila vazia para ID ${orderId}. Limpo.`);
+      }
+    });
+
+  orderQueues.set(orderId, nextTask);
 });
 
 app.post("/webhooks/bonifiq", async (req, res) => {
@@ -192,16 +212,45 @@ app.post("/webhooks/bonifiq", async (req, res) => {
       console.log(
         `Contato não encontrado no Bitrix para o email: ${customerEmail}. Ignorando.`
       );
-
       return res
         .status(200)
         .send({ status: "ignored", reason: "contact_not_found_in_crm" });
     }
 
-    await updateBitrixCashback(bitrixContact.ID, currentBalance);
+    // --- NOVA LÓGICA DE EXPIRAÇÃO ---
+    let expirationText = "";
+
+    // Consulta a API da Bonifiq para pegar detalhes de expiração
+    const bonifiqData = await getBonifiqCustomerData(customerEmail);
+
+    if (
+      bonifiqData &&
+      bonifiqData.PointsToExpire &&
+      bonifiqData.PointsToExpire.length > 0
+    ) {
+      const lines = bonifiqData.PointsToExpire.map((item) => {
+        const valReais = (item.Points * 0.05).toFixed(2);
+        const points = item.Points;
+        const dateObj = new Date(item.When);
+        const dateStr = dateObj.toLocaleDateString("pt-BR", {
+          timeZone: "UTC",
+        });
+
+        return `Pontos: ${points} R$ ${valReais} em ${dateStr}`;
+      });
+
+      expirationText = lines.join("\n");
+    }
+    // --------------------------------
+
+    await updateBitrixCashback(
+      bitrixContact.ID,
+      currentBalance,
+      expirationText
+    );
 
     console.log(
-      `Sucesso! Bitrix ID ${bitrixContact.ID} atualizado para ${currentBalance}`
+      `Sucesso! Bitrix ID ${bitrixContact.ID} atualizado para R$ ${currentBalance}. Expirações processadas.`
     );
 
     return res

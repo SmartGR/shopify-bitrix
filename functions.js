@@ -11,6 +11,7 @@ import {
   BITRIX_WEBHOOK_BASE,
   SHOPIFY_ACCESS_TOKEN,
   SHOPIFY_DOMAIN,
+  FIELD_CASHBACK_EXPIRATION,
 } from "./constants.js";
 
 let usersCache = null;
@@ -219,10 +220,19 @@ export async function findContactByEmail(email) {
   }
 }
 
-export async function updateBitrixCashback(contactId, newBalance) {
+export async function updateBitrixCashback(
+  contactId,
+  newBalance,
+  expirationText = ""
+) {
   try {
     const fields = {};
     fields[BITRIX_FIELD] = newBalance;
+
+    // Se tiver texto de expiração, adiciona ao update
+    if (expirationText) {
+      fields[FIELD_CASHBACK_EXPIRATION] = expirationText;
+    }
 
     const response = await axios.post(`${BITRIX_URL}/crm.contact.update`, {
       id: contactId,
@@ -394,5 +404,35 @@ export async function enrollStudentInTeam(student, teamUUID) {
       ? JSON.stringify(err.response.data)
       : err.message;
     console.error(`[Eduvem] FALHA ao adicionar ao grupo: ${errorMsg}`);
+  }
+}
+
+export async function getBonifiqCustomerData(email) {
+  try {
+    if (!process.env.BONIFIQ_USER || !process.env.BONIFIQ_PASS) {
+      console.warn("Credenciais Bonifiq não configuradas no .env");
+      return null;
+    }
+
+    const auth = Buffer.from(
+      `${process.env.BONIFIQ_USER}:${process.env.BONIFIQ_PASS}`
+    ).toString("base64");
+
+    const url = `${BONIFIQ_API_URL}/${email}/points`;
+
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error(
+      `Erro ao buscar dados Bonifiq para ${email}:`,
+      error.response?.data || error.message
+    );
+    return null;
   }
 }
