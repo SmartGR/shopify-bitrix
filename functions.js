@@ -229,7 +229,7 @@ export async function updateBitrixCashback(
   try {
     const fields = {};
     fields[BITRIX_FIELD] = newBalance;
-
+    console.log("expirationText", expirationText);
     // Se tiver texto de expiração, adiciona ao update
     if (expirationText) {
       fields[FIELD_CASHBACK_EXPIRATION] = expirationText;

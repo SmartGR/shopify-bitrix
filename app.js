@@ -242,7 +242,7 @@ app.post("/webhooks/bonifiq", async (req, res) => {
       expirationText = lines.join("\n");
     }
     // --------------------------------
-
+    console.log("algoo", bonifiqData.PointsToExpire);
     await updateBitrixCashback(
       bitrixContact.ID,
       currentBalance,
