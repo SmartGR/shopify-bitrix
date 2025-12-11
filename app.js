@@ -239,7 +239,7 @@ app.post("/webhooks/bonifiq", async (req, res) => {
         return `Pontos: ${points} R$ ${valReais} em ${dateStr}`;
       });
 
-      expirationText = lines.join("\n");
+      expirationText = lines.join(" || ");
     }
     // --------------------------------
     console.log("algoo", bonifiqData, bonifiqData.PointsToExpire);
