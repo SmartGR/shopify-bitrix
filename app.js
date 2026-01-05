@@ -10,7 +10,6 @@ import {
   updateBitrixCashback,
   setDealProducts,
   findDealByShopifyId,
-  findContactByEmail,
   bitrixUrl,
   getBitrixUserIdByName,
   getEduvemDataFromProduct,
@@ -21,9 +20,6 @@ import {
 } from "./functions.js";
 
 import {
-  BITRIX_WEBHOOK_BASE,
-  SHOPIFY_ACCESS_TOKEN,
-  SHOPIFY_DOMAIN,
   CATEGORY_ID,
   FIELD_SHOPIFY_ID,
   FIELD_CITY,
@@ -206,18 +202,41 @@ app.post("/webhooks/bonifiq", async (req, res) => {
         .send({ status: "ignored", reason: "missing_data" });
     }
 
-    const bitrixContact = await findContactByEmail(customerEmail);
+    // --- NOVA LÓGICA: Encontrar ou Criar Contato ---
 
-    if (!bitrixContact) {
-      console.log(
-        `Contato não encontrado no Bitrix para o email: ${customerEmail}. Ignorando.`
+    // Tratamento de Nome (Bonifiq geralmente manda nome completo string)
+    const rawName = customer.Name || "Cliente Bonifiq";
+    const nameParts = rawName.split(" ");
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(" ") || "Loja"; // Fallback se tiver só o primeiro nome
+
+    // Tratamento de Telefone
+    const phone = customer.Phone || "";
+
+    console.log(
+      `[BONIFIQ] Processando contato: ${firstName} ${lastName} (${customerEmail})`
+    );
+
+    // Usa a mesma função do Shopify para garantir que cria se não existir
+    // Passamos address: null pois o webhook de pontos geralmente não traz endereço completo
+    const bitrixContactId = await findOrCreateContact({
+      firstName,
+      lastName,
+      email: customerEmail,
+      phone,
+      address: null,
+    });
+
+    if (!bitrixContactId) {
+      console.error(
+        `[ERRO] Não foi possível encontrar ou criar o contato para: ${customerEmail}`
       );
       return res
-        .status(200)
-        .send({ status: "ignored", reason: "contact_not_found_in_crm" });
+        .status(200) // Retorna 200 para a Bonifiq não ficar tentando reenviar infinitamente em caso de erro de lógica
+        .send({ status: "error", reason: "failed_to_create_contact" });
     }
 
-    // --- NOVA LÓGICA DE EXPIRAÇÃO ---
+    // --- LÓGICA DE EXPIRAÇÃO (Mantida) ---
     let expirationText = "";
 
     // Consulta a API da Bonifiq para pegar detalhes de expiração
@@ -230,34 +249,34 @@ app.post("/webhooks/bonifiq", async (req, res) => {
     ) {
       const lines = bonifiqData.PointsToExpire.map((item) => {
         const valReais = (item.Points * 0.05).toFixed(2);
-        const points = item.Points;
+        const pts = item.Points;
         const dateObj = new Date(item.When);
         const dateStr = dateObj.toLocaleDateString("pt-BR", {
           timeZone: "UTC",
         });
 
-        return `Pontos: ${points} R$ ${valReais} em ${dateStr}`;
+        return `Pontos: ${pts} R$ ${valReais} em ${dateStr}`;
       });
 
       expirationText = lines.join(" || ");
     }
     // --------------------------------
-    console.log("algoo", bonifiqData, bonifiqData.PointsToExpire);
+
     await updateBitrixCashback(
-      bitrixContact.ID,
+      bitrixContactId, // Usamos o ID retornado pelo findOrCreate
       currentBalance,
       expirationText
     );
 
     console.log(
-      `Sucesso! Bitrix ID ${bitrixContact.ID} atualizado para R$ ${currentBalance}. Expirações processadas.`
+      `Sucesso! Bitrix ID ${bitrixContactId} atualizado para R$ ${currentBalance}. Expirações processadas.`
     );
 
     return res
       .status(200)
-      .send({ status: "success", bitrix_id: bitrixContact.ID });
+      .send({ status: "success", bitrix_id: bitrixContactId });
   } catch (error) {
-    console.error("Erro fatal no processamento:", error.message);
+    console.error("Erro fatal no processamento Bonifiq:", error.message);
     return res.status(500).send({ error: "Internal Server Error" });
   }
 });
