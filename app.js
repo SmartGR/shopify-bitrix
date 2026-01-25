@@ -38,7 +38,7 @@ const orderQueues = new Map();
 
 if (!process.env.SHOPIFY_ACCESS_TOKEN)
   console.warn(
-    "ALERTA: SHOPIFY_ACCESS_TOKEN não definido. Juros não serão processados."
+    "ALERTA: SHOPIFY_ACCESS_TOKEN não definido. Juros não serão processados.",
   );
 
 async function processOrderWebhook(order) {
@@ -59,7 +59,7 @@ async function processOrderWebhook(order) {
 
     const noteAttributes = orderData.note_attributes || [];
     const affiliateObj = noteAttributes.find(
-      (attr) => attr.name === "Affiliate"
+      (attr) => attr.name === "Affiliate",
     );
     const vendedorValue = affiliateObj ? affiliateObj.value : "";
 
@@ -102,7 +102,7 @@ ${productsString}
     const cityValue = address.city || "";
     const stateId = getBitrixStateId(address);
     const orderValue =
-      paidAmount > 0 ? paidAmount : Number(order.total_price) ?? 0;
+      paidAmount > 0 ? paidAmount : (Number(order.total_price) ?? 0);
 
     codRastreio = codRastreio?.replace("Cód. de Rastreamento:", "").trim();
 
@@ -135,7 +135,7 @@ ${productsString}
 
     if (existingDealId) {
       console.log(
-        `[ATUALIZAR] Deal encontrado: ${existingDealId}. Atualizando...`
+        `[ATUALIZAR] Deal encontrado: ${existingDealId}. Atualizando...`,
       );
       await axios.post(bitrixUrl("crm.deal.update"), {
         id: existingDealId,
@@ -195,7 +195,7 @@ app.post("/webhooks/bonifiq", async (req, res) => {
 
     if (!customerEmail || currentBalance === undefined) {
       console.warn(
-        `Payload ignorado. Email: ${customerEmail}, Saldo: ${currentBalance}`
+        `Payload ignorado. Email: ${customerEmail}, Saldo: ${currentBalance}`,
       );
       return res
         .status(200)
@@ -214,7 +214,7 @@ app.post("/webhooks/bonifiq", async (req, res) => {
     const phone = customer.Phone || "";
 
     console.log(
-      `[BONIFIQ] Processando contato: ${firstName} ${lastName} (${customerEmail})`
+      `[BONIFIQ] Processando contato: ${firstName} ${lastName} (${customerEmail})`,
     );
 
     // Usa a mesma função do Shopify para garantir que cria se não existir
@@ -229,7 +229,7 @@ app.post("/webhooks/bonifiq", async (req, res) => {
 
     if (!bitrixContactId) {
       console.error(
-        `[ERRO] Não foi possível encontrar ou criar o contato para: ${customerEmail}`
+        `[ERRO] Não foi possível encontrar ou criar o contato para: ${customerEmail}`,
       );
       return res
         .status(200) // Retorna 200 para a Bonifiq não ficar tentando reenviar infinitamente em caso de erro de lógica
@@ -265,11 +265,11 @@ app.post("/webhooks/bonifiq", async (req, res) => {
     await updateBitrixCashback(
       bitrixContactId, // Usamos o ID retornado pelo findOrCreate
       currentBalance,
-      expirationText
+      expirationText,
     );
 
     console.log(
-      `Sucesso! Bitrix ID ${bitrixContactId} atualizado para R$ ${currentBalance}. Expirações processadas.`
+      `Sucesso! Bitrix ID ${bitrixContactId} atualizado para R$ ${currentBalance}. Expirações processadas.`,
     );
 
     return res
@@ -287,7 +287,7 @@ app.post("/webhooks/shopify/enroll", async (req, res) => {
   try {
     const order = req.body;
     console.log(
-      `[Eduvem] Iniciando processamento pedido: ${order.name} (${order.id})`
+      `[Eduvem] Iniciando processamento pedido: ${order.name} (${order.id})`,
     );
 
     const customer = order.customer || {};
@@ -295,7 +295,7 @@ app.post("/webhooks/shopify/enroll", async (req, res) => {
 
     const cpfAttr = noteAttributes.find(
       (attr) =>
-        attr.name.toLowerCase() === "cpf" || attr.name.toLowerCase() === "cnpj"
+        attr.name.toLowerCase() === "cpf" || attr.name.toLowerCase() === "cnpj",
     );
     const studentDocument = cpfAttr
       ? cpfAttr.value
@@ -315,27 +315,26 @@ app.post("/webhooks/shopify/enroll", async (req, res) => {
     for (const item of order.line_items) {
       const productId = item.product_id;
 
-      const { courseClassUUID, teamUUID } = await getEduvemDataFromProduct(
-        productId
-      );
+      const { courseClassUUID, teamUUID } =
+        await getEduvemDataFromProduct(productId);
 
       if (courseClassUUID) {
         console.log(
-          `[Eduvem] Produto "${item.title}" é SALA: ${courseClassUUID}. Matriculando...`
+          `[Eduvem] Produto "${item.title}" é SALA: ${courseClassUUID}. Matriculando...`,
         );
         await enrollStudent(studentData, courseClassUUID);
       }
 
       if (teamUUID) {
         console.log(
-          `[Eduvem] Produto "${item.title}" é GRUPO: ${teamUUID}. Adicionando...`
+          `[Eduvem] Produto "${item.title}" é GRUPO: ${teamUUID}. Adicionando...`,
         );
         await enrollStudentInTeam(studentData, teamUUID);
       }
 
       if (!courseClassUUID && !teamUUID) {
         console.log(
-          `[Eduvem] Produto "${item.title}" (ID: ${productId}) não possui metafields de integração.`
+          `[Eduvem] Produto "${item.title}" (ID: ${productId}) não possui metafields de integração.`,
         );
       }
     }

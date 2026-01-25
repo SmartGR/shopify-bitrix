@@ -15,14 +15,17 @@ import {
   BONIFIQ_API_URL,
 } from "./constants.js";
 
-let usersCache = null;
+let usersCache = {
+  byName: {},
+  byEmail: {},
+};
 let lastCacheUpdate = 0;
-const CACHE_TTL = 1000 * 60 * 120;
+const CACHE_TTL = 1000 * 60 * 5; // 5 minutos
 const API_VERSION = "2025-10";
 
 const EDUVEM_API_URL =
   "https://smartgr.eduvem.com/api/integrations/courseClasses";
-const EDUVEM_TEAM_API_URL = "https://smartgr.eduvem.com/api/integrations/teams"; // Nova URL
+const EDUVEM_TEAM_API_URL = "https://smartgr.eduvem.com/api/integrations/teams";
 
 export function bitrixUrl(method) {
   return `${BITRIX_WEBHOOK_BASE}${method}.json`;
@@ -59,7 +62,7 @@ export async function getShopifyOrder(orderId) {
   } catch (error) {
     console.error(
       "Erro ao buscar Order Shopify Full:",
-      error.response?.data || error.message
+      error.response?.data || error.message,
     );
     return null;
   }
@@ -81,24 +84,24 @@ export async function getShopifyMetafields(orderId) {
     const metafields = response.data.metafields || [];
 
     const interestMeta = metafields.find(
-      (m) => m.namespace === "pagarme" && m.key === "interest_cents"
+      (m) => m.namespace === "pagarme" && m.key === "interest_cents",
     );
     const paidMeta = metafields.find(
-      (m) => m.namespace === "pagarme" && m.key === "paid_amount_cents"
+      (m) => m.namespace === "pagarme" && m.key === "paid_amount_cents",
     );
 
     const interest = interestMeta ? Number(interestMeta.value) / 100 : 0;
     const paidAmount = paidMeta ? Number(paidMeta.value) / 100 : 0;
 
     console.log(
-      `Metafields encontrados - Juros: ${interest}, Total Pago: ${paidAmount}`
+      `Metafields encontrados - Juros: ${interest}, Total Pago: ${paidAmount}`,
     );
 
     return { interest, paidAmount };
   } catch (error) {
     console.error(
       "Erro ao buscar Metafields Shopify:",
-      error.response?.data || error.message
+      error.response?.data || error.message,
     );
 
     return { interest: 0, paidAmount: 0 };
@@ -224,7 +227,7 @@ export async function findContactByEmail(email) {
 export async function updateBitrixCashback(
   contactId,
   newBalance,
-  expirationText = ""
+  expirationText = "",
 ) {
   try {
     const fields = {};
@@ -251,10 +254,16 @@ export async function getBitrixUserIdByName(fullName) {
   if (!fullName) return null;
 
   const now = Date.now();
+  const FIELD_REP_EMAIL = "UF_USR_1769352754419";
 
-  if (!usersCache || now - lastCacheUpdate > CACHE_TTL) {
+  if (
+    !usersCache.byName ||
+    Object.keys(usersCache.byName).length === 0 ||
+    now - lastCacheUpdate > CACHE_TTL
+  ) {
     console.log("Cache de usuários vazio ou expirado. Buscando no Bitrix...");
-    usersCache = {};
+
+    usersCache = { byName: {}, byEmail: {} };
 
     let start = 0;
     let hasNext = true;
@@ -263,6 +272,7 @@ export async function getBitrixUserIdByName(fullName) {
       while (hasNext) {
         const response = await axios.post(bitrixUrl("user.get"), {
           start: start,
+          FILTER: { ACTIVE: "Y" },
         });
 
         const result = response.data.result || [];
@@ -273,7 +283,13 @@ export async function getBitrixUserIdByName(fullName) {
           const completeName = `${name} ${lastName}`.trim().toUpperCase();
 
           if (completeName) {
-            usersCache[completeName] = user.ID;
+            usersCache.byName[completeName] = user;
+          }
+
+          const email = user.EMAIL || "";
+          if (email) {
+            const normalizedEmail = email.trim().toLowerCase();
+            usersCache.byEmail[normalizedEmail] = user;
           }
         });
 
@@ -286,9 +302,7 @@ export async function getBitrixUserIdByName(fullName) {
 
       lastCacheUpdate = now;
       console.log(
-        `Cache de usuários atualizado. Total mapeado: ${
-          Object.keys(usersCache).length
-        }`
+        `Cache de usuários atualizado. Nomes: ${Object.keys(usersCache.byName).length}, Emails: ${Object.keys(usersCache.byEmail).length}`,
       );
     } catch (e) {
       console.error("Erro ao buscar usuários do Bitrix:", e.message);
@@ -297,11 +311,35 @@ export async function getBitrixUserIdByName(fullName) {
   }
 
   const normalizedSearch = fullName.trim().toUpperCase();
-  const foundId = usersCache[normalizedSearch];
+  const sellerUser = usersCache.byName[normalizedSearch];
 
-  if (foundId) {
-    console.log(`Vendedor encontrado: "${fullName}" -> ID ${foundId}`);
-    return foundId;
+  if (sellerUser) {
+    const sellerId = sellerUser.ID;
+    console.log(
+      `Vendedor encontrado por nome: "${fullName}" (ID: ${sellerId})`,
+    );
+
+    const repEmailRaw = sellerUser[FIELD_REP_EMAIL];
+
+    if (repEmailRaw) {
+      const repEmail = String(repEmailRaw).trim().toLowerCase();
+      console.log(`Vendedor possui representante configurado: ${repEmail}`);
+
+      const repUser = usersCache.byEmail[repEmail];
+
+      if (repUser) {
+        console.log(
+          `[TROCA DE RESPONSÁVEL] ID alterado de ${sellerId} (Vendedor) para ${repUser.ID} (Representante: ${repUser.NAME} ${repUser.LAST_NAME})`,
+        );
+        return repUser.ID;
+      } else {
+        console.warn(
+          `Representante com email ${repEmail} não foi encontrado no Bitrix. Mantendo vendedor original.`,
+        );
+      }
+    }
+
+    return sellerId;
   } else {
     console.warn(`Vendedor não encontrado no Bitrix: "${fullName}"`);
     return null;
@@ -322,11 +360,11 @@ export async function getEduvemDataFromProduct(productId) {
     const metafields = response.data.metafields;
 
     const classMeta = metafields.find(
-      (m) => m.namespace === "custom" && m.key === "id_sala_eduvem"
+      (m) => m.namespace === "custom" && m.key === "id_sala_eduvem",
     );
 
     const teamMeta = metafields.find(
-      (m) => m.namespace === "custom" && m.key === "id_do_grupo_eduvem"
+      (m) => m.namespace === "custom" && m.key === "id_do_grupo_eduvem",
     );
 
     return {
@@ -336,7 +374,7 @@ export async function getEduvemDataFromProduct(productId) {
   } catch (error) {
     console.error(
       `Erro ao buscar metafields para produto ${productId}:`,
-      error.message
+      error.message,
     );
     return { courseClassUUID: null, teamUUID: null };
   }
@@ -397,7 +435,7 @@ export async function enrollStudentInTeam(student, teamUUID) {
     });
 
     console.log(
-      `[Eduvem] SUCESSO! Aluno ${student.email} adicionado ao GRUPO.`
+      `[Eduvem] SUCESSO! Aluno ${student.email} adicionado ao GRUPO.`,
     );
     return response.data;
   } catch (err) {
@@ -416,7 +454,7 @@ export async function getBonifiqCustomerData(email) {
     }
 
     const auth = Buffer.from(
-      `${process.env.BONIFIQ_USER}:${process.env.BONIFIQ_PASS}`
+      `${process.env.BONIFIQ_USER}:${process.env.BONIFIQ_PASS}`,
     ).toString("base64");
 
     const url = `${BONIFIQ_API_URL}/${email}/points`;
@@ -432,7 +470,7 @@ export async function getBonifiqCustomerData(email) {
   } catch (error) {
     console.error(
       `Erro ao buscar dados Bonifiq para ${email}:`,
-      error.response?.data || error.message
+      error.response?.data || error.message,
     );
     return null;
   }
