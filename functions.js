@@ -514,6 +514,7 @@ async function getFulfillmentOrders(orderId) {
 
 // Função Principal que será chamada no index.js
 export async function syncTrackingFromNote(order) {
+  console.log("order.note", order.note);
   if (!order.note) return;
 
   // 1. Extrair código do Note
