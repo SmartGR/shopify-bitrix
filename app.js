@@ -17,6 +17,7 @@ import {
   enrollStudent,
   enrollStudentInTeam,
   getBonifiqCustomerData,
+  syncTrackingFromNote,
 } from "./functions.js";
 
 import {
@@ -47,6 +48,15 @@ async function processOrderWebhook(order) {
 
     const apiOrder = await getShopifyOrder(order.id);
     const orderData = apiOrder || order;
+
+    try {
+      await syncTrackingFromNote(orderData);
+    } catch (error) {
+      console.error(
+        "[Tracking] Falha não-bloqueante na sync de rastreio:",
+        error,
+      );
+    }
 
     const customer = order.customer || {};
     const address = order.shipping_address || order.billing_address || {};

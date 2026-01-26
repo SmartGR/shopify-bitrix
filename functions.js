@@ -475,3 +475,143 @@ export async function getBonifiqCustomerData(email) {
     return null;
   }
 }
+
+// ... (mantenha os imports e constantes existentes)
+
+// --- NOVAS FUNÇÕES PARA GESTÃO DE RASTREIO ---
+
+async function getFulfillments(orderId) {
+  try {
+    const url = `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/orders/${orderId}/fulfillments.json`;
+    const { data } = await axios.get(url, {
+      headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN },
+    });
+    return data.fulfillments || [];
+  } catch (e) {
+    console.error(
+      `Erro ao buscar fulfillments do pedido ${orderId}:`,
+      e.message,
+    );
+    return [];
+  }
+}
+
+async function getFulfillmentOrders(orderId) {
+  try {
+    const url = `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/orders/${orderId}/fulfillment_orders.json`;
+    const { data } = await axios.get(url, {
+      headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN },
+    });
+    return data.fulfillment_orders || [];
+  } catch (e) {
+    console.error(
+      `Erro ao buscar fulfillment_orders do pedido ${orderId}:`,
+      e.message,
+    );
+    return [];
+  }
+}
+
+// Função Principal que será chamada no index.js
+export async function syncTrackingFromNote(order) {
+  if (!order.note) return;
+
+  // 1. Extrair código do Note
+  const match = order.note.match(/Cód\. de Rastreamento:\s*([A-Za-z0-9]+)/i);
+  if (!match || !match[1]) return;
+
+  const trackingCode = match[1];
+  const orderId = order.id;
+
+  // 2. Definir Transportadora e URL
+  let company = "Other";
+  let url = null;
+  if (/^\d{14}$/.test(trackingCode)) {
+    company = "Jadlog";
+    url = `https://www.jadlog.com.br/tracking?cod=${trackingCode}`;
+  } else if (/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(trackingCode)) {
+    company = "Correios";
+    url = `https://rastreamento.correios.com.br/app/index.php?objeto=${trackingCode}`;
+  }
+
+  // 3. Verificar Fulfillments existentes
+  const fulfillments = await getFulfillments(orderId);
+
+  // CENÁRIO A: Já tem fulfillment criado
+  if (fulfillments.length > 0) {
+    const existing = fulfillments[0];
+
+    // Se já tem rastreio setado, aborta para não sobrescrever/duplicar
+    if (existing.tracking_number) {
+      if (existing.tracking_number !== trackingCode) {
+        console.warn(
+          `[Tracking] Pedido ${orderId} já tem rastreio (${existing.tracking_number}). Ignorando novo do Note.`,
+        );
+      }
+      return;
+    }
+
+    console.log(
+      `[Tracking] Atualizando fulfillment ${existing.id} com código ${trackingCode}`,
+    );
+
+    // Atualiza o fulfillment existente
+    try {
+      await axios.post(
+        `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/fulfillments/${existing.id}/update_tracking.json`,
+        {
+          fulfillment: {
+            tracking_info: { number: trackingCode, company, url },
+            notify_customer: true,
+          },
+        },
+        { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } },
+      );
+      console.log(`[Tracking] Sucesso ao atualizar rastreio.`);
+    } catch (e) {
+      console.error(
+        `[Tracking] Erro ao atualizar rastreio:`,
+        e.response?.data || e.message,
+      );
+    }
+  }
+
+  // CENÁRIO B: Não tem fulfillment (Cria um novo)
+  else {
+    console.log(
+      `[Tracking] Criando fulfillment para pedido ${orderId} com código ${trackingCode}`,
+    );
+
+    const fOrders = await getFulfillmentOrders(orderId);
+    if (!fOrders.length) {
+      console.warn(
+        `[Tracking] Não foi possível criar fulfillment: fulfillment_orders vazio.`,
+      );
+      return;
+    }
+
+    const fOrder = fOrders[0];
+
+    try {
+      await axios.post(
+        `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/fulfillments.json`,
+        {
+          fulfillment: {
+            line_items_by_fulfillment_order: [
+              { fulfillment_order_id: fOrder.id },
+            ],
+            tracking_info: { number: trackingCode, company, url },
+            notify_customer: true,
+          },
+        },
+        { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } },
+      );
+      console.log(`[Tracking] Sucesso ao criar fulfillment com rastreio.`);
+    } catch (e) {
+      console.error(
+        `[Tracking] Erro ao criar fulfillment:`,
+        e.response?.data || e.message,
+      );
+    }
+  }
+}
